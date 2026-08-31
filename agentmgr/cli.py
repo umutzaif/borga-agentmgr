@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from agentmgr import __version__
@@ -17,15 +18,39 @@ from agentmgr.charter import charter_fingerprint
 from agentmgr.events import (
     KNOWN_EVENTS,
     append_event,
+    parse_iso,
     read_events,
     sanitise_actor,
 )
-from agentmgr.handoff import create_handoff, find_handoff
+from agentmgr.handoff import create_handoff, find_handoff, unfilled_sections
 from agentmgr.ledger import rebuild, verify
 from agentmgr.paths import Layout, ProjectNotInitialised
 from agentmgr.report import findings
 from agentmgr.scaffold import init_project
-from agentmgr.state import ProjectState, load_config, reconcile
+from agentmgr.state import (
+    DEFAULT_MANAGER_STALE_MINUTES,
+    DEFAULT_STALE_MINUTES,
+    DEFAULT_THREAD_STALE_MINUTES,
+    ProjectState,
+    load_config,
+    reconcile,
+)
+
+
+def _thresholds(cfg: dict) -> tuple[int, int, int]:
+    return (
+        int(cfg.get("heartbeat_stale_minutes", DEFAULT_STALE_MINUTES)),
+        int(cfg.get("thread_stale_minutes", DEFAULT_THREAD_STALE_MINUTES)),
+        int(cfg.get("manager_stale_minutes", DEFAULT_MANAGER_STALE_MINUTES)),
+    )
+
+
+def _manager_is_stale(state: ProjectState, minutes: int, now: datetime | None = None) -> bool:
+    if not state.manager:
+        return False
+    mgr = state.agents.get(state.manager)
+    now = now or datetime.now(timezone.utc)
+    return bool(mgr and parse_iso(mgr.last_seen) < now - timedelta(minutes=minutes))
 
 
 def _load(start: Path | None = None) -> Layout:
@@ -94,17 +119,35 @@ def cmd_log(args: argparse.Namespace) -> int:
 
 
 # ------------------------------------------------------------------------- status
+def _last_check(layout: Layout) -> dict | None:
+    latest = None
+    for ev in read_events(layout):
+        if ev.event == "check-run":
+            latest = {**ev.data, "ts": ev.ts, "actor": ev.actor}
+    return latest
+
+
 def _render_status(state: ProjectState, cfg: dict, layout: Layout) -> None:
     project = cfg.get("project", layout.root.name)
-    stale_minutes = int(cfg.get("heartbeat_stale_minutes", 90))
-    stale = state.stale_agents(stale_minutes)
+    solo_minutes, _, mgr_minutes = _thresholds(cfg)
+    stale = state.stale_agents(solo_minutes)
+    _, charter_sha = charter_fingerprint(layout)
+
+    manager_line = state.manager or "-"
+    if state.manager and _manager_is_stale(state, mgr_minutes):
+        manager_line = f"{state.manager}  (STALE - last {state.agents[state.manager].last_seen})"
 
     bar = "-" * 60
     print(f"Agent Manager  .  {project}")
     print(bar)
     print(f"{'mode':<12}{state.mode}")
-    print(f"{'manager':<12}{state.manager or '-'}")
+    print(f"{'manager':<12}{manager_line}")
     print(f"{'events':<12}{state.event_count}   last {state.last_event_ts or '-'}")
+
+    last_check = _last_check(layout)
+    if last_check:
+        verdict = "PASS" if last_check.get("ok") else "FAIL"
+        print(f"{'last check':<12}{verdict} (exit {last_check.get('exit_code')})  {last_check.get('ts')}")
     print()
 
     print("agents")
@@ -115,10 +158,14 @@ def _render_status(state: ProjectState, cfg: dict, layout: Layout) -> None:
         if ag.solo:
             flags.append("solo")
         if ag.actor in stale:
-            flags.append(f"STALE >{stale_minutes}m")
-        ack = f"charter v{ag.charter_ack}" if ag.charter_ack else "charter -"
+            flags.append(f"STALE >{solo_minutes}m")
+        if ag.charter_ack:
+            drift = charter_sha and ag.charter_sha and ag.charter_sha != charter_sha
+            ack = f"charter v{ag.charter_ack}" + (" DRIFT" if drift else "")
+        else:
+            ack = "charter -"
         tail = ("  " + ", ".join(flags)) if flags else ""
-        print(f"  {ag.actor:<20} {ack:<12} last {ag.last_seen}{tail}")
+        print(f"  {ag.actor:<20} {ack:<16} last {ag.last_seen}{tail}")
     print()
 
     opened = state.open_threads()
@@ -200,6 +247,7 @@ def _state_to_json(state: ProjectState) -> dict:
             a.actor: {
                 "solo": a.solo,
                 "charter_ack": a.charter_ack,
+                "charter_sha": a.charter_sha,
                 "last_seen": a.last_seen,
             }
             for a in state.agents.values()
@@ -226,6 +274,51 @@ def cmd_verify(args: argparse.Namespace) -> int:
         return 2
     ok, msg = verify(layout)
     print(("OK    " if ok else "FAIL  ") + msg)
+    return 0 if ok else 1
+
+
+# -------------------------------------------------------------------- M4.5 check
+def cmd_check(args: argparse.Namespace) -> int:
+    layout = _load()
+    cfg = load_config(layout)
+    command = args.command or cfg.get("verify_command")
+    if not command and (layout.root / "tests").is_dir():
+        command = "python -m unittest discover -s tests"
+    if not command:
+        _eprint(
+            "error: no check command - pass --command, or set \"verify_command\" in "
+            ".agentmgr/config.json"
+        )
+        return 1
+
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=layout.root,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=args.timeout,
+        )
+    except subprocess.TimeoutExpired:
+        ok, code, tail = False, None, f"timed out after {args.timeout}s"
+    else:
+        ok = proc.returncode == 0
+        code = proc.returncode
+        tail = "\n".join((proc.stdout + proc.stderr).strip().splitlines()[-8:])
+
+    actor = sanitise_actor(args.as_) if args.as_ else "check"
+    append_event(
+        layout,
+        "check-run",
+        actor,
+        {"ok": ok, "exit_code": code, "command": command, "phase": args.phase, "tail": tail[:2000]},
+    )
+    rebuild(layout)
+    print(f"check {'PASS' if ok else 'FAIL'} (exit {code})  [{args.phase}]  {command}")
+    if not ok and tail:
+        for line in tail.splitlines():
+            print(f"  | {line}")
     return 0 if ok else 1
 
 
@@ -258,8 +351,16 @@ def cmd_claim_solo(args: argparse.Namespace) -> int:
         return 1
 
     if state.manager:
-        print(f"manager {state.manager} is active - not writing claim-solo (safe no-op)")
-        return 0
+        _, _, mgr_stale = _thresholds(load_config(layout))
+        if _manager_is_stale(state, mgr_stale):
+            seen = state.agents[state.manager].last_seen
+            _eprint(
+                f"warning: manager {state.manager} looks stale (last {seen}); "
+                "recording claim-solo anyway"
+            )
+        else:
+            print(f"manager {state.manager} is active - not writing claim-solo (safe no-op)")
+            return 0
 
     existing = state.agents.get(actor)
     if existing and existing.solo:
@@ -320,17 +421,17 @@ def cmd_heartbeat(args: argparse.Namespace) -> int:
 def cmd_reconcile(args: argparse.Namespace) -> int:
     layout = _load()
     state = reconcile(read_events(layout))
-    cfg = load_config(layout)
-    threshold = int(cfg.get("heartbeat_stale_minutes", 90))
+    solo_t, thread_t, mgr_t = _thresholds(load_config(layout))
+    _, charter_sha = charter_fingerprint(layout)
 
-    issues = findings(state, threshold)
+    issues = findings(state, solo_t, thread_t, mgr_t, charter_sha)
     _write_threads_md(state, layout)
     rebuild(layout)
 
     if not issues:
-        print(f"reconcile: no issues (threshold {threshold}m)")
+        print(f"reconcile: no issues (solo {solo_t}m / thread {thread_t}m / manager {mgr_t}m)")
         return 0
-    print(f"reconcile: {len(issues)} finding(s) (threshold {threshold}m)")
+    print(f"reconcile: {len(issues)} finding(s)")
     for item in issues:
         print(f"  - {item}")
     return 1 if args.strict else 0
@@ -392,6 +493,22 @@ def cmd_handoff_accept(args: argparse.Namespace) -> int:
         return 0
     if declared_to and target != declared_to:
         _eprint(f"warning: handoff {hid} targets {declared_to}, accepting as {target}")
+
+    unfilled = unfilled_sections(path.read_text(encoding="utf-8"))
+    if unfilled and not args.force:
+        _eprint(
+            "error: handoff packet still has unfilled placeholders in section(s): "
+            + "; ".join(unfilled)
+        )
+        _eprint("  the outgoing agent should fill these in, or pass --force to accept anyway")
+        return 1
+
+    taker = reconcile(events).agents.get(target)
+    if taker is None or taker.charter_ack is None:
+        _eprint(
+            f"warning: {target} has no charter-ack on record - it should run "
+            f"'agentmgr charter-ack {target}' before working"
+        )
 
     append_event(layout, "handoff-accepted", target, {"id": hid, "to": target})
     rebuild(layout)
@@ -519,7 +636,12 @@ def cmd_manager_start(args: argparse.Namespace) -> int:
         print(f"{actor} is already the active manager")
         return 0
     if state.manager:
-        _eprint(f"warning: {state.manager} is already the active manager; taking over as {actor}")
+        _, _, mgr_stale = _thresholds(load_config(layout))
+        if _manager_is_stale(state, mgr_stale):
+            seen = state.agents[state.manager].last_seen
+            print(f"previous manager {state.manager} looks stale (last {seen}); taking over as {actor}")
+        else:
+            _eprint(f"warning: {state.manager} is already the active manager; taking over as {actor}")
     append_event(layout, "manager-active", actor, {})
     rebuild(layout)
     print(f"manager-active recorded for {actor}")
@@ -561,9 +683,9 @@ def cmd_manager_run(args: argparse.Namespace) -> int:
         while True:
             events = read_events(layout)
             state = reconcile(events)
-            cfg = load_config(layout)
-            threshold = int(cfg.get("heartbeat_stale_minutes", 90))
-            issues = findings(state, threshold)
+            solo_t, thread_t, mgr_t = _thresholds(load_config(layout))
+            _, charter_sha = charter_fingerprint(layout)
+            issues = findings(state, solo_t, thread_t, mgr_t, charter_sha)
             _write_threads_md(state, layout)
             if not args.once and tick % 5 == 0:
                 append_event(layout, "heartbeat", actor, {"role": "manager"})
@@ -639,6 +761,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify = sub.add_parser("verify", help="check the ledger hash chain")
     p_verify.set_defaults(func=cmd_verify)
 
+    p_check = sub.add_parser("check", help="run the project's verify command and record the result")
+    p_check.add_argument("--command", help="shell command (default: config verify_command, or unittest)")
+    p_check.add_argument("--as", dest="as_", help="actor id to attribute the check to")
+    p_check.add_argument("--phase", choices=["pre", "post", "ad-hoc"], default="ad-hoc")
+    p_check.add_argument("--timeout", type=int, default=300, help="seconds before the command is killed")
+    p_check.set_defaults(func=cmd_check)
+
     p_join = sub.add_parser("join", help="record agent-join with a capability profile")
     p_join.add_argument("actor", help="stable actor id")
     p_join.add_argument("--provider", help="e.g. Anthropic, OpenAI")
@@ -673,6 +802,7 @@ def build_parser() -> argparse.ArgumentParser:
     ha = ho.add_parser("accept", help="accept a handoff and take ownership")
     ha.add_argument("id", help="handoff id or unique prefix")
     ha.add_argument("--as", dest="as_", help="accepting actor id (default: the handoff target)")
+    ha.add_argument("--force", action="store_true", help="accept even if the packet has unfilled placeholders")
     ha.set_defaults(func=cmd_handoff_accept)
 
     hl = ho.add_parser("list", help="list handoff packets and their status")

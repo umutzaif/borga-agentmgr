@@ -10,7 +10,9 @@ from typing import Any
 from agentmgr.events import Event, parse_iso
 from agentmgr.paths import Layout
 
-DEFAULT_STALE_MINUTES = 90
+DEFAULT_STALE_MINUTES = 90            # a lone "working alone" claim gone quiet
+DEFAULT_THREAD_STALE_MINUTES = 2880   # an open thread with no update (2 days)
+DEFAULT_MANAGER_STALE_MINUTES = 15    # a `manager run` loop that stopped heartbeating
 
 
 @dataclass
@@ -19,6 +21,7 @@ class AgentState:
     joined: str
     last_seen: str
     charter_ack: int | None = None
+    charter_sha: str | None = None
     solo: bool = False
 
 
@@ -75,6 +78,7 @@ def reconcile(events: list[Event]) -> ProjectState:
 
         if ev.event == "charter-ack":
             ag.charter_ack = data.get("version")
+            ag.charter_sha = data.get("sha256")
         elif ev.event == "claim-solo":
             ag.solo = True
         elif ev.event == "manager-active":

@@ -53,8 +53,10 @@ agentmgr claim-solo claude-desktop-01     # manager aktifse güvenli no-op
 agentmgr heartbeat claude-desktop-01
 
 agentmgr status                           # uzlaştırılmış durum (+ --json)
-agentmgr reconcile                        # sahipsiz claim / bayat thread / eksik ack
+agentmgr reconcile                        # sahipsiz claim / bayat thread / bayat manager / charter kayması
 agentmgr verify                           # ledger hash zincirini denetle
+agentmgr check --command "pytest" --as claude-desktop-01 --phase pre
+#   projenin doğrulama komutunu çalıştırır, sonucu check-run olayı olarak kaydeder
 
 agentmgr log <event> --actor <id> --data '{...}'   # ham olay ekleme
 ```
@@ -100,6 +102,7 @@ agentmgr watch --interval 5                 # salt-okunur canlı pano (hiçbir �
 | **M2** ✅ | `join` / `claim-solo` / `charter-ack` / `heartbeat` kolaylıkları, `reconcile` (orphan / bayat / eksik ack) |
 | **M3** ✅ | `handoff new` (git/ağaç/günlük/Charter ön-doldurma) + `handoff accept/list/show` + sahiplik transferi, `thread add/update/close` |
 | **M4** ✅ | `manager start/stop/run` (reconcile döngüsü + heartbeat), `watch` (salt-okunur terminal panosu) |
+| **M4.5** ✅ | bayat manager tespiti + otomatik devralma, `check` (doğrulama komutu → `check-run`), handoff placeholder kapısı (`--force`), charter kayması uyarısı, ayrı bayatlık eşikleri |
 | M5 | opsiyonel `dashboard` (tek dosya HTML) |
 | v2 | fan-out / yeteneğe göre ekip dağıtımı, karar onay akışı |
 

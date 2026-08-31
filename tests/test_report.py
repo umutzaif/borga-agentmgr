@@ -51,7 +51,31 @@ class FindingsTests(unittest.TestCase):
             ("thread-open", "claude-01", {"id": "T1", "title": "Parser"}),
             base_ts=old,
         ))
-        self.assertTrue(any("stale thread T1" in f for f in findings(state, 90)))
+        self.assertTrue(any("stale thread T1" in f for f in findings(state, 90, thread_stale_minutes=90)))
+
+    def test_thread_threshold_is_separate_from_solo(self) -> None:
+        old = (datetime.now(timezone.utc) - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        state = reconcile(seq(
+            ("thread-open", "claude-01", {"id": "T1", "title": "Parser"}),
+            base_ts=old,
+        ))
+        # default thread threshold (2 days) does not flag a 3h-old thread
+        self.assertFalse(any("stale thread" in f for f in findings(state, 90)))
+
+    def test_flags_stale_manager(self) -> None:
+        old = (datetime.now(timezone.utc) - timedelta(minutes=40)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        state = reconcile(seq(("manager-active", "mgr-01", None), base_ts=old))
+        self.assertTrue(any("stale manager" in f for f in findings(state, 90, manager_stale_minutes=15)))
+
+    def test_flags_charter_drift(self) -> None:
+        state = reconcile(seq(
+            ("charter-ack", "claude-01", {"version": 1, "sha256": "aaaa1111"}),
+            ("claim-solo", "claude-01", None),
+        ))
+        drift = findings(state, 90, charter_sha="bbbb2222")
+        self.assertTrue(any("charter drift" in f for f in drift))
+        # same sha -> no drift finding
+        self.assertFalse(any("charter drift" in f for f in findings(state, 90, charter_sha="aaaa1111")))
 
 
 if __name__ == "__main__":
