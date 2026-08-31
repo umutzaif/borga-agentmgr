@@ -42,14 +42,21 @@ pip install -e .
 
 Python 3.9+ gerekir, başka bağımlılık yok.
 
-## Kullanım (M1)
+## Kullanım
 
 ```bash
-agentmgr init                     # .agentmgr/ iskeletini kur
-agentmgr log claim-solo --actor claude-desktop-01
-agentmgr log charter-ack --actor claude-desktop-01 --data "{\"version\":1}"
-agentmgr status                   # uzlaştırılmış durum
-agentmgr verify                   # ledger hash zincirini denetle
+agentmgr init --name deneme               # .agentmgr/ iskeletini kur
+
+agentmgr join gpt-desktop-01 --provider OpenAI --strengths "test, hiz"
+agentmgr charter-ack claude-desktop-01    # sürüm + sha CHARTER.md'den okunur
+agentmgr claim-solo claude-desktop-01     # manager aktifse güvenli no-op
+agentmgr heartbeat claude-desktop-01
+
+agentmgr status                           # uzlaştırılmış durum (+ --json)
+agentmgr reconcile                        # sahipsiz claim / bayat thread / eksik ack
+agentmgr verify                           # ledger hash zincirini denetle
+
+agentmgr log <event> --actor <id> --data '{...}'   # ham olay ekleme
 ```
 
 `agentmgr log` olay tipleri: `agent-join`, `claim-solo`, `charter-ack`,
@@ -62,7 +69,7 @@ agentmgr verify                   # ledger hash zincirini denetle
 | Adım | İçerik |
 | ---- | ------ |
 | **M1** ✅ | `init`, olay günlüğü + hash zinciri, `log`, `status`, `verify` |
-| M2 | `claim-solo` / `charter-ack` kolaylıkları, `heartbeat`, `reconcile` / orphan tespiti |
+| **M2** ✅ | `join` / `claim-solo` / `charter-ack` / `heartbeat` kolaylıkları, `reconcile` (orphan / bayat / eksik ack) |
 | M3 | `handoff new` (git/ağaç/günlükten ön-doldurma) + `handoff accept` + sahiplik transferi |
 | M4 | `manager start/stop/run`, `watch` (terminal panosu) |
 | M5 | opsiyonel `dashboard` (tek dosya HTML) |

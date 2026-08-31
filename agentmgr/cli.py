@@ -8,14 +8,31 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from agentmgr import __version__
-from agentmgr.events import KNOWN_EVENTS, append_event, read_events
+from agentmgr.charter import charter_fingerprint
+from agentmgr.events import (
+    KNOWN_EVENTS,
+    append_event,
+    parse_iso,
+    read_events,
+    sanitise_actor,
+)
 from agentmgr.ledger import rebuild, verify
 from agentmgr.paths import Layout, ProjectNotInitialised
 from agentmgr.scaffold import init_project
 from agentmgr.state import ProjectState, load_config, reconcile
+
+
+def _load(start: Path | None = None) -> Layout:
+    """Discover the project or raise SystemExit(2) with a friendly message."""
+    try:
+        return Layout.discover(start)
+    except ProjectNotInitialised as exc:
+        _eprint(f"error: {exc}")
+        raise SystemExit(2)
 
 
 def _eprint(msg: str) -> None:
@@ -210,6 +227,147 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+# ---------------------------------------------------------------- M2 convenience
+def cmd_join(args: argparse.Namespace) -> int:
+    layout = _load()
+    data: dict = {}
+    if args.provider:
+        data["provider"] = args.provider
+    if args.strengths:
+        data["strengths"] = [s.strip() for s in args.strengths.split(",") if s.strip()]
+    try:
+        ev = append_event(layout, "agent-join", args.actor, data)
+    except ValueError as exc:
+        _eprint(f"error: {exc}")
+        return 1
+    _remember_actor(layout, ev.actor)
+    rebuild(layout)
+    print(f"agent-join recorded for {ev.actor}")
+    return 0
+
+
+def cmd_claim_solo(args: argparse.Namespace) -> int:
+    layout = _load()
+    state = reconcile(read_events(layout))
+    try:
+        actor = sanitise_actor(args.actor)
+    except ValueError as exc:
+        _eprint(f"error: {exc}")
+        return 1
+
+    if state.manager:
+        print(f"manager {state.manager} is active - not writing claim-solo (safe no-op)")
+        return 0
+
+    existing = state.agents.get(actor)
+    if existing and existing.solo:
+        print(f"{actor} already holds a solo claim")
+        return 0
+
+    others = sorted(a.actor for a in state.agents.values() if a.solo and a.actor != actor)
+    append_event(layout, "claim-solo", actor)
+    rebuild(layout)
+    if others:
+        verb = "also holds" if len(others) == 1 else "also hold"
+        _eprint(
+            f"warning: {', '.join(others)} {verb} a solo claim - project is CONTESTED; "
+            "resolve with a handoff or by starting the manager"
+        )
+    print(f"claim-solo recorded for {actor}")
+    return 0
+
+
+def cmd_charter_ack(args: argparse.Namespace) -> int:
+    layout = _load()
+    version, digest = charter_fingerprint(layout)
+    if args.version is not None:
+        version = args.version
+    if version is None:
+        _eprint(
+            "error: could not read a version from CHARTER.md - add a "
+            "'**Sürüm:** N' line or pass --version"
+        )
+        return 1
+
+    data: dict = {"version": version}
+    if digest:
+        data["sha256"] = digest
+    try:
+        append_event(layout, "charter-ack", args.actor, data)
+    except ValueError as exc:
+        _eprint(f"error: {exc}")
+        return 1
+    rebuild(layout)
+    tail = f" (sha {digest[:12]})" if digest else ""
+    print(f"charter-ack v{version} recorded for {sanitise_actor(args.actor)}{tail}")
+    return 0
+
+
+def cmd_heartbeat(args: argparse.Namespace) -> int:
+    layout = _load()
+    try:
+        append_event(layout, "heartbeat", args.actor)
+    except ValueError as exc:
+        _eprint(f"error: {exc}")
+        return 1
+    rebuild(layout)
+    print(f"heartbeat recorded for {sanitise_actor(args.actor)}")
+    return 0
+
+
+def cmd_reconcile(args: argparse.Namespace) -> int:
+    layout = _load()
+    state = reconcile(read_events(layout))
+    cfg = load_config(layout)
+    threshold = int(cfg.get("heartbeat_stale_minutes", 90))
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=threshold)
+
+    findings: list[str] = []
+
+    for actor in sorted(state.stale_agents(threshold, now)):
+        seen = state.agents[actor].last_seen
+        findings.append(f"orphaned solo claim: {actor} silent > {threshold}m (last {seen})")
+
+    for ag in sorted(state.agents.values(), key=lambda a: a.actor):
+        owns = any(t.owner == ag.actor for t in state.threads.values())
+        if ag.charter_ack is None and (ag.solo or owns):
+            findings.append(f"no charter-ack on record for active agent {ag.actor}")
+
+    for thread in sorted(state.open_threads(), key=lambda t: t.id):
+        if thread.updated and parse_iso(thread.updated) < cutoff:
+            findings.append(
+                f"stale thread {thread.id} ({thread.status}) - no update since {thread.updated}"
+            )
+
+    if state.mode == "CONTESTED":
+        findings.append("mode CONTESTED: multiple solo claims and no active manager")
+
+    _write_threads_md(state, layout)
+    rebuild(layout)
+
+    if not findings:
+        print(f"reconcile: no issues (threshold {threshold}m)")
+        return 0
+    print(f"reconcile: {len(findings)} finding(s) (threshold {threshold}m)")
+    for item in findings:
+        print(f"  - {item}")
+    return 1 if args.strict else 0
+
+
+def _remember_actor(layout: Layout, actor: str) -> None:
+    if not layout.config.exists():
+        return
+    try:
+        cfg = json.loads(layout.config.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return
+    actors = cfg.setdefault("actors", [])
+    if actor not in actors:
+        actors.append(actor)
+        layout.config.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+
+
 # --------------------------------------------------------------------------- main
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -238,6 +396,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_verify = sub.add_parser("verify", help="check the ledger hash chain")
     p_verify.set_defaults(func=cmd_verify)
+
+    p_join = sub.add_parser("join", help="record agent-join with a capability profile")
+    p_join.add_argument("actor", help="stable actor id")
+    p_join.add_argument("--provider", help="e.g. Anthropic, OpenAI")
+    p_join.add_argument("--strengths", help="comma-separated capability tags")
+    p_join.set_defaults(func=cmd_join)
+
+    p_solo = sub.add_parser("claim-solo", help="declare 'working alone'; no-op if a manager is active")
+    p_solo.add_argument("actor", help="stable actor id")
+    p_solo.set_defaults(func=cmd_claim_solo)
+
+    p_ack = sub.add_parser("charter-ack", help="record that this agent read the current Charter")
+    p_ack.add_argument("actor", help="stable actor id")
+    p_ack.add_argument("--version", type=int, help="override the version read from CHARTER.md")
+    p_ack.set_defaults(func=cmd_charter_ack)
+
+    p_hb = sub.add_parser("heartbeat", help="record a liveness ping")
+    p_hb.add_argument("actor", help="stable actor id")
+    p_hb.set_defaults(func=cmd_heartbeat)
+
+    p_rec = sub.add_parser("reconcile", help="report orphaned claims, stale threads, uncommitted agents")
+    p_rec.add_argument("--strict", action="store_true", help="exit 1 if any finding")
+    p_rec.set_defaults(func=cmd_reconcile)
 
     return parser
 
