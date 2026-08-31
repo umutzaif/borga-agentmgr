@@ -8,7 +8,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timedelta, timezone
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from agentmgr import __version__
@@ -16,13 +17,13 @@ from agentmgr.charter import charter_fingerprint
 from agentmgr.events import (
     KNOWN_EVENTS,
     append_event,
-    parse_iso,
     read_events,
     sanitise_actor,
 )
 from agentmgr.handoff import create_handoff, find_handoff
 from agentmgr.ledger import rebuild, verify
 from agentmgr.paths import Layout, ProjectNotInitialised
+from agentmgr.report import findings
 from agentmgr.scaffold import init_project
 from agentmgr.state import ProjectState, load_config, reconcile
 
@@ -321,37 +322,16 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     state = reconcile(read_events(layout))
     cfg = load_config(layout)
     threshold = int(cfg.get("heartbeat_stale_minutes", 90))
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(minutes=threshold)
 
-    findings: list[str] = []
-
-    for actor in sorted(state.stale_agents(threshold, now)):
-        seen = state.agents[actor].last_seen
-        findings.append(f"orphaned solo claim: {actor} silent > {threshold}m (last {seen})")
-
-    for ag in sorted(state.agents.values(), key=lambda a: a.actor):
-        owns = any(t.owner == ag.actor for t in state.threads.values())
-        if ag.charter_ack is None and (ag.solo or owns):
-            findings.append(f"no charter-ack on record for active agent {ag.actor}")
-
-    for thread in sorted(state.open_threads(), key=lambda t: t.id):
-        if thread.updated and parse_iso(thread.updated) < cutoff:
-            findings.append(
-                f"stale thread {thread.id} ({thread.status}) - no update since {thread.updated}"
-            )
-
-    if state.mode == "CONTESTED":
-        findings.append("mode CONTESTED: multiple solo claims and no active manager")
-
+    issues = findings(state, threshold)
     _write_threads_md(state, layout)
     rebuild(layout)
 
-    if not findings:
+    if not issues:
         print(f"reconcile: no issues (threshold {threshold}m)")
         return 0
-    print(f"reconcile: {len(findings)} finding(s) (threshold {threshold}m)")
-    for item in findings:
+    print(f"reconcile: {len(issues)} finding(s) (threshold {threshold}m)")
+    for item in issues:
         print(f"  - {item}")
     return 1 if args.strict else 0
 
@@ -526,6 +506,110 @@ def _remember_actor(layout: Layout, actor: str) -> None:
         layout.config.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
 
 
+# ------------------------------------------------------------------- M4 manager
+def cmd_manager_start(args: argparse.Namespace) -> int:
+    layout = _load()
+    try:
+        actor = sanitise_actor(args.as_)
+    except ValueError as exc:
+        _eprint(f"error: {exc}")
+        return 1
+    state = reconcile(read_events(layout))
+    if state.manager == actor:
+        print(f"{actor} is already the active manager")
+        return 0
+    if state.manager:
+        _eprint(f"warning: {state.manager} is already the active manager; taking over as {actor}")
+    append_event(layout, "manager-active", actor, {})
+    rebuild(layout)
+    print(f"manager-active recorded for {actor}")
+    return 0
+
+
+def cmd_manager_stop(args: argparse.Namespace) -> int:
+    layout = _load()
+    try:
+        actor = sanitise_actor(args.as_)
+    except ValueError as exc:
+        _eprint(f"error: {exc}")
+        return 1
+    state = reconcile(read_events(layout))
+    if state.manager != actor:
+        _eprint(f"warning: active manager is {state.manager or 'none'}, not {actor}")
+    append_event(layout, "manager-idle", actor, {})
+    rebuild(layout)
+    print(f"manager-idle recorded for {actor}")
+    return 0
+
+
+def cmd_manager_run(args: argparse.Namespace) -> int:
+    layout = _load()
+    try:
+        actor = sanitise_actor(args.as_)
+    except ValueError as exc:
+        _eprint(f"error: {exc}")
+        return 1
+    interval = max(1, args.interval)
+
+    append_event(layout, "manager-active", actor, {})
+    rebuild(layout)
+    print(f"manager {actor} active - reconciling every {interval}s (Ctrl+C to stop)")
+
+    previous: list[str] | None = None
+    tick = 0
+    try:
+        while True:
+            events = read_events(layout)
+            state = reconcile(events)
+            cfg = load_config(layout)
+            threshold = int(cfg.get("heartbeat_stale_minutes", 90))
+            issues = findings(state, threshold)
+            _write_threads_md(state, layout)
+            if not args.once and tick % 5 == 0:
+                append_event(layout, "heartbeat", actor, {"role": "manager"})
+            rebuild(layout)
+
+            stamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
+            if issues != previous:
+                print(f"[{stamp}] mode={state.mode} events={state.event_count} findings={len(issues)}")
+                for item in issues:
+                    print(f"    - {item}")
+                previous = issues
+            else:
+                print(f"[{stamp}] mode={state.mode} events={state.event_count} (no change)")
+
+            if args.once:
+                break
+            tick += 1
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
+    finally:
+        append_event(layout, "manager-idle", actor, {})
+        rebuild(layout)
+        print(f"manager {actor} idle")
+    return 0
+
+
+def cmd_watch(args: argparse.Namespace) -> int:
+    layout = _load()
+    interval = max(1, args.interval)
+    try:
+        while True:
+            state = reconcile(read_events(layout))
+            cfg = load_config(layout)
+            if not args.no_clear:
+                print("\033[2J\033[H", end="")
+            _render_status(state, cfg, layout)
+            print(f"\n(watching - refresh {interval}s - Ctrl+C to stop)")
+            if args.once:
+                break
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
+    return 0
+
+
 # --------------------------------------------------------------------------- main
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -621,6 +705,29 @@ def build_parser() -> argparse.ArgumentParser:
     tc.add_argument("id")
     tc.add_argument("--actor", required=True)
     tc.set_defaults(func=cmd_thread_close)
+
+    p_mgr = sub.add_parser("manager", help="manager lifecycle (coordination only)")
+    mg = p_mgr.add_subparsers(dest="manager_cmd", required=True)
+
+    m_start = mg.add_parser("start", help="stamp manager-active")
+    m_start.add_argument("--as", dest="as_", required=True, help="manager actor id")
+    m_start.set_defaults(func=cmd_manager_start)
+
+    m_stop = mg.add_parser("stop", help="stamp manager-idle")
+    m_stop.add_argument("--as", dest="as_", required=True, help="manager actor id")
+    m_stop.set_defaults(func=cmd_manager_stop)
+
+    m_run = mg.add_parser("run", help="active loop: reconcile + report + heartbeat until Ctrl+C")
+    m_run.add_argument("--as", dest="as_", required=True, help="manager actor id")
+    m_run.add_argument("--interval", type=int, default=30, help="seconds between cycles")
+    m_run.add_argument("--once", action="store_true", help="run one cycle and exit")
+    m_run.set_defaults(func=cmd_manager_run)
+
+    p_watch = sub.add_parser("watch", help="live read-only status panel")
+    p_watch.add_argument("--interval", type=int, default=5, help="seconds between refreshes")
+    p_watch.add_argument("--once", action="store_true", help="render once and exit")
+    p_watch.add_argument("--no-clear", action="store_true", help="do not clear the screen each refresh")
+    p_watch.set_defaults(func=cmd_watch)
 
     return parser
 

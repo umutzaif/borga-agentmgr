@@ -75,6 +75,18 @@ agentmgr handoff accept <id> --as gpt-desktop-01
 #   -> handoff-accepted olayı + sahiplik SOLO(claude) -> SOLO(gpt)
 ```
 
+### Manager ve izleme
+
+```bash
+agentmgr manager start --as manager-01     # manager-active damgası -> MANAGED mod
+agentmgr manager run --as manager-01 --interval 30
+#   arka plan döngüsü: her 30s reconcile + bulgu raporu + THREADS.md yenile
+#   + periyodik manager heartbeat; Ctrl+C'de manager-idle yazıp çıkar
+agentmgr manager stop --as manager-01      # manager-idle damgası
+
+agentmgr watch --interval 5                 # salt-okunur canlı pano (hiçbir şey yazmaz)
+```
+
 `agentmgr log` olay tipleri: `agent-join`, `claim-solo`, `charter-ack`,
 `manager-active`, `manager-idle`, `thread-open`, `thread-claim`, `thread-update`,
 `thread-close`, `handoff-created`, `handoff-accepted`, `decision-proposed`,
@@ -87,7 +99,7 @@ agentmgr handoff accept <id> --as gpt-desktop-01
 | **M1** ✅ | `init`, olay günlüğü + hash zinciri, `log`, `status`, `verify` |
 | **M2** ✅ | `join` / `claim-solo` / `charter-ack` / `heartbeat` kolaylıkları, `reconcile` (orphan / bayat / eksik ack) |
 | **M3** ✅ | `handoff new` (git/ağaç/günlük/Charter ön-doldurma) + `handoff accept/list/show` + sahiplik transferi, `thread add/update/close` |
-| M4 | `manager start/stop/run`, `watch` (terminal panosu) |
+| **M4** ✅ | `manager start/stop/run` (reconcile döngüsü + heartbeat), `watch` (salt-okunur terminal panosu) |
 | M5 | opsiyonel `dashboard` (tek dosya HTML) |
 | v2 | fan-out / yeteneğe göre ekip dağıtımı, karar onay akışı |
 
