@@ -35,6 +35,7 @@ KNOWN_EVENTS: frozenset[str] = frozenset(
         "handoff-accepted",
         "decision-proposed",
         "decision-ratified",
+        "check-run",
         "heartbeat",
     }
 )

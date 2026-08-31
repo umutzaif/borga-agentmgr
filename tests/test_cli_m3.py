@@ -33,11 +33,16 @@ class M3CliTests(unittest.TestCase):
     def state(self):
         return reconcile(read_events(Layout(self.root)))
 
-    def _new_handoff(self) -> str:
+    def _new_handoff(self, fill: bool = True) -> str:
         rc, out, _ = self.cli("handoff", "new", "--from", "claude-01", "--to", "gpt-01")
         self.assertEqual(rc, 0, out)
         docs = list((self.root / ".agentmgr" / "HANDOFF").glob("*.md"))
         self.assertEqual(len(docs), 1)
+        if fill:  # replace the _<...>_ placeholders so 'accept' does not gate
+            import re
+
+            text = re.sub(r"_<[^>\n]*>_", "done", docs[0].read_text(encoding="utf-8"))
+            docs[0].write_text(text, encoding="utf-8")
         return docs[0].stem.split("-", 1)[0]
 
     def test_handoff_new_creates_doc_and_event(self) -> None:

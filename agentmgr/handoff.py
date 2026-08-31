@@ -6,6 +6,7 @@ outgoing agent fills the judgement parts by hand.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -206,6 +207,21 @@ def create_handoff(
     with open(path, "x", encoding="utf-8") as fh:
         fh.write(body)
     return hid, path
+
+
+_PLACEHOLDER_RE = re.compile(r"_<[^>\n]*>_")
+_SECTION_RE = re.compile(r"^## (\d+)\. (.+)$", re.MULTILINE)
+
+
+def unfilled_sections(text: str, through: int = 7) -> list[str]:
+    """Numbered sections 1..``through`` that still contain a ``_<...>_`` placeholder."""
+    marks = [(int(m.group(1)), m.group(2).strip(), m.start()) for m in _SECTION_RE.finditer(text)]
+    marks.append((10**6, "", len(text)))
+    bad: list[str] = []
+    for (num, title, start), (_, _, nxt) in zip(marks, marks[1:]):
+        if num <= through and _PLACEHOLDER_RE.search(text[start:nxt]):
+            bad.append(f"{num}. {title}")
+    return bad
 
 
 def find_handoff(layout, token: str) -> Path | None:

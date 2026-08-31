@@ -3,8 +3,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import re
+
 from agentmgr.events import Event
-from agentmgr.handoff import create_handoff, find_handoff
+from agentmgr.handoff import create_handoff, find_handoff, unfilled_sections
 from agentmgr.scaffold import init_project
 from agentmgr.state import reconcile
 
@@ -63,6 +65,19 @@ class HandoffTests(unittest.TestCase):
 
     def test_find_missing_returns_none(self) -> None:
         self.assertIsNone(find_handoff(self.layout, "nope"))
+
+    def test_fresh_packet_has_unfilled_sections_1_to_7(self) -> None:
+        _, path = create_handoff(self.layout, "a", "b", [], reconcile([]))
+        bad = unfilled_sections(path.read_text(encoding="utf-8"))
+        self.assertTrue(any(s.startswith("1.") for s in bad))
+        self.assertTrue(any(s.startswith("7.") for s in bad))
+        # section 8 is a static checklist, never flagged
+        self.assertFalse(any(s.startswith("8.") for s in bad))
+
+    def test_filled_packet_has_no_unfilled_sections(self) -> None:
+        _, path = create_handoff(self.layout, "a", "b", [], reconcile([]))
+        text = re.sub(r"_<[^>\n]*>_", "done", path.read_text(encoding="utf-8"))
+        self.assertEqual(unfilled_sections(text), [])
 
 
 if __name__ == "__main__":

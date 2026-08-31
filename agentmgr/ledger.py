@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from typing import Any
 
 from agentmgr.events import Event, read_events
@@ -42,9 +43,13 @@ def chain(events: list[Event]) -> list[dict[str, Any]]:
 def rebuild(layout: Layout) -> list[dict[str, Any]]:
     rows = chain(read_events(layout))
     layout.ledger.parent.mkdir(parents=True, exist_ok=True)
-    with open(layout.ledger, "w", encoding="utf-8") as fh:
+    # write to a temp file then atomically swap, so a concurrent reader never
+    # sees a half-written ledger
+    tmp = layout.ledger.with_suffix(layout.ledger.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
         for row in rows:
             fh.write(_canonical(row) + "\n")
+    os.replace(tmp, layout.ledger)
     return rows
 
 

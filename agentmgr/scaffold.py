@@ -7,7 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agentmgr.paths import DIRNAME, Layout
-from agentmgr.state import DEFAULT_STALE_MINUTES
+from agentmgr.state import (
+    DEFAULT_MANAGER_STALE_MINUTES,
+    DEFAULT_STALE_MINUTES,
+    DEFAULT_THREAD_STALE_MINUTES,
+)
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 _TEMPLATES = ("CHARTER.md", "STYLE.md", "AGENTS.md", "BOOTSTRAP.md")
@@ -51,6 +55,9 @@ def init_project(
             "project": project_name or layout.root.name,
             "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "heartbeat_stale_minutes": DEFAULT_STALE_MINUTES,
+            "thread_stale_minutes": DEFAULT_THREAD_STALE_MINUTES,
+            "manager_stale_minutes": DEFAULT_MANAGER_STALE_MINUTES,
+            "verify_command": None,
             "actors": [],
         }
         layout.config.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
