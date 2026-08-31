@@ -20,6 +20,7 @@ from agentmgr.events import (
     read_events,
     sanitise_actor,
 )
+from agentmgr.handoff import create_handoff, find_handoff
 from agentmgr.ledger import rebuild, verify
 from agentmgr.paths import Layout, ProjectNotInitialised
 from agentmgr.scaffold import init_project
@@ -355,6 +356,163 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     return 1 if args.strict else 0
 
 
+# ------------------------------------------------------------------- M3 handoff
+def cmd_handoff_new(args: argparse.Namespace) -> int:
+    layout = _load()
+    events = read_events(layout)
+    state = reconcile(events)
+    try:
+        hid, path = create_handoff(layout, args.frm, args.to, events, state)
+    except (ValueError, FileExistsError) as exc:
+        _eprint(f"error: {exc}")
+        return 1
+    frm, to = sanitise_actor(args.frm), sanitise_actor(args.to)
+    rel = path.relative_to(layout.root).as_posix()
+    append_event(
+        layout,
+        "handoff-created",
+        frm,
+        {"id": hid, "from": frm, "to": to, "path": rel},
+    )
+    rebuild(layout)
+    print(f"created {rel}")
+    print("  fill in sections 1-7 by hand, then the receiver runs:")
+    print(f"  agentmgr handoff accept {hid} --as {to}")
+    return 0
+
+
+def cmd_handoff_accept(args: argparse.Namespace) -> int:
+    layout = _load()
+    try:
+        path = find_handoff(layout, args.id)
+    except ValueError as exc:
+        _eprint(f"error: {exc}")
+        return 1
+    if path is None:
+        _eprint(f"error: no handoff matching {args.id!r}")
+        return 1
+
+    hid = path.stem.split("-", 1)[0]
+    events = read_events(layout)
+    created = [e for e in events if e.event == "handoff-created" and e.data.get("id") == hid]
+    accepted = [e for e in events if e.event == "handoff-accepted" and e.data.get("id") == hid]
+
+    declared_to = created[0].data.get("to") if created else None
+    if not declared_to and "-to-" in path.stem:
+        declared_to = path.stem.split("-to-", 1)[1]
+
+    target = args.as_ or declared_to
+    if not target:
+        _eprint("error: could not infer the accepting actor; pass --as <id>")
+        return 1
+    target = sanitise_actor(target)
+
+    if accepted:
+        print(f"handoff {hid} was already accepted by {accepted[-1].data.get('to')}")
+        return 0
+    if declared_to and target != declared_to:
+        _eprint(f"warning: handoff {hid} targets {declared_to}, accepting as {target}")
+
+    append_event(layout, "handoff-accepted", target, {"id": hid, "to": target})
+    rebuild(layout)
+    version, _ = charter_fingerprint(layout)
+    ver_hint = f"   (CHARTER.md is at v{version})" if version else ""
+    print(f"handoff {hid} accepted - ownership is now SOLO({target})")
+    print("next:")
+    print(f"  1. read {path.relative_to(layout.root).as_posix()} sections 1-7")
+    print(f"  2. agentmgr charter-ack {target}{ver_hint}")
+    print("  3. start from the 'siradaki adim' of the first open thread")
+    return 0
+
+
+def cmd_handoff_list(args: argparse.Namespace) -> int:
+    layout = _load()
+    docs = sorted(layout.handoff.glob("*.md")) if layout.handoff.is_dir() else []
+    if not docs:
+        print("no handoffs yet")
+        return 0
+    events = read_events(layout)
+    accepted_ids = {e.data.get("id") for e in events if e.event == "handoff-accepted"}
+    for path in docs:
+        hid = path.stem.split("-", 1)[0]
+        status = "accepted" if hid in accepted_ids else "PENDING"
+        print(f"  {hid}  {status:<9} {path.stem}")
+    return 0
+
+
+def cmd_handoff_show(args: argparse.Namespace) -> int:
+    layout = _load()
+    try:
+        path = find_handoff(layout, args.id)
+    except ValueError as exc:
+        _eprint(f"error: {exc}")
+        return 1
+    if path is None:
+        _eprint(f"error: no handoff matching {args.id!r}")
+        return 1
+    print(path.read_text(encoding="utf-8"))
+    return 0
+
+
+# ------------------------------------------------------------------- M3 threads
+def _refresh_threads(layout: Layout) -> None:
+    _write_threads_md(reconcile(read_events(layout)), layout)
+
+
+def cmd_thread_add(args: argparse.Namespace) -> int:
+    layout = _load()
+    data: dict = {"id": args.id, "title": args.title}
+    if args.owner:
+        data["owner"] = sanitise_actor(args.owner)
+    if args.next_step:
+        data["next_step"] = args.next_step
+    try:
+        append_event(layout, "thread-open", args.actor, data)
+    except ValueError as exc:
+        _eprint(f"error: {exc}")
+        return 1
+    rebuild(layout)
+    _refresh_threads(layout)
+    print(f"thread {args.id} opened")
+    return 0
+
+
+def cmd_thread_update(args: argparse.Namespace) -> int:
+    layout = _load()
+    data: dict = {"id": args.id}
+    if args.status:
+        data["status"] = args.status
+    if args.next_step is not None:
+        data["next_step"] = args.next_step
+    if args.owner:
+        data["owner"] = sanitise_actor(args.owner)
+    if len(data) == 1:
+        _eprint("error: nothing to update - pass --status, --next, or --owner")
+        return 1
+    try:
+        append_event(layout, "thread-update", args.actor, data)
+    except ValueError as exc:
+        _eprint(f"error: {exc}")
+        return 1
+    rebuild(layout)
+    _refresh_threads(layout)
+    print(f"thread {args.id} updated")
+    return 0
+
+
+def cmd_thread_close(args: argparse.Namespace) -> int:
+    layout = _load()
+    try:
+        append_event(layout, "thread-close", args.actor, {"id": args.id})
+    except ValueError as exc:
+        _eprint(f"error: {exc}")
+        return 1
+    rebuild(layout)
+    _refresh_threads(layout)
+    print(f"thread {args.id} closed")
+    return 0
+
+
 def _remember_actor(layout: Layout, actor: str) -> None:
     if not layout.config.exists():
         return
@@ -419,6 +577,50 @@ def build_parser() -> argparse.ArgumentParser:
     p_rec = sub.add_parser("reconcile", help="report orphaned claims, stale threads, uncommitted agents")
     p_rec.add_argument("--strict", action="store_true", help="exit 1 if any finding")
     p_rec.set_defaults(func=cmd_reconcile)
+
+    p_ho = sub.add_parser("handoff", help="create / accept project handoffs")
+    ho = p_ho.add_subparsers(dest="handoff_cmd", required=True)
+
+    hn = ho.add_parser("new", help="scaffold a handoff packet with mechanical parts pre-filled")
+    hn.add_argument("--from", dest="frm", required=True, help="outgoing actor id")
+    hn.add_argument("--to", required=True, help="incoming actor id")
+    hn.set_defaults(func=cmd_handoff_new)
+
+    ha = ho.add_parser("accept", help="accept a handoff and take ownership")
+    ha.add_argument("id", help="handoff id or unique prefix")
+    ha.add_argument("--as", dest="as_", help="accepting actor id (default: the handoff target)")
+    ha.set_defaults(func=cmd_handoff_accept)
+
+    hl = ho.add_parser("list", help="list handoff packets and their status")
+    hl.set_defaults(func=cmd_handoff_list)
+
+    hs = ho.add_parser("show", help="print a handoff packet")
+    hs.add_argument("id", help="handoff id or unique prefix")
+    hs.set_defaults(func=cmd_handoff_show)
+
+    p_th = sub.add_parser("thread", help="thread registry operations")
+    th = p_th.add_subparsers(dest="thread_cmd", required=True)
+
+    ta = th.add_parser("add", help="open a thread")
+    ta.add_argument("id", help="short thread id, e.g. T1")
+    ta.add_argument("--title", required=True)
+    ta.add_argument("--actor", required=True)
+    ta.add_argument("--owner")
+    ta.add_argument("--next", dest="next_step", help="next concrete step")
+    ta.set_defaults(func=cmd_thread_add)
+
+    tu = th.add_parser("update", help="update a thread's status / next step / owner")
+    tu.add_argument("id")
+    tu.add_argument("--actor", required=True)
+    tu.add_argument("--status", choices=["open", "blocked", "done"])
+    tu.add_argument("--owner")
+    tu.add_argument("--next", dest="next_step")
+    tu.set_defaults(func=cmd_thread_update)
+
+    tc = th.add_parser("close", help="close a thread")
+    tc.add_argument("id")
+    tc.add_argument("--actor", required=True)
+    tc.set_defaults(func=cmd_thread_close)
 
     return parser
 

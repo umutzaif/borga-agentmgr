@@ -59,6 +59,22 @@ agentmgr verify                           # ledger hash zincirini denetle
 agentmgr log <event> --actor <id> --data '{...}'   # ham olay ekleme
 ```
 
+### Devir (handoff)
+
+```bash
+agentmgr thread add T1 --title "Parser" --actor claude-desktop-01 --next "lexer"
+agentmgr thread update T1 --actor claude-desktop-01 --status blocked
+agentmgr thread close T1 --actor claude-desktop-01
+
+agentmgr handoff new --from claude-desktop-01 --to gpt-desktop-01
+#   -> HANDOFF/<ts>-...-to-...md; git log, dosya ağacı, açık thread'ler,
+#      Charter sürüm/hash önden dolu. 1-7. bölümleri elle doldur.
+agentmgr handoff list
+agentmgr handoff show <id>
+agentmgr handoff accept <id> --as gpt-desktop-01
+#   -> handoff-accepted olayı + sahiplik SOLO(claude) -> SOLO(gpt)
+```
+
 `agentmgr log` olay tipleri: `agent-join`, `claim-solo`, `charter-ack`,
 `manager-active`, `manager-idle`, `thread-open`, `thread-claim`, `thread-update`,
 `thread-close`, `handoff-created`, `handoff-accepted`, `decision-proposed`,
@@ -70,7 +86,7 @@ agentmgr log <event> --actor <id> --data '{...}'   # ham olay ekleme
 | ---- | ------ |
 | **M1** ✅ | `init`, olay günlüğü + hash zinciri, `log`, `status`, `verify` |
 | **M2** ✅ | `join` / `claim-solo` / `charter-ack` / `heartbeat` kolaylıkları, `reconcile` (orphan / bayat / eksik ack) |
-| M3 | `handoff new` (git/ağaç/günlükten ön-doldurma) + `handoff accept` + sahiplik transferi |
+| **M3** ✅ | `handoff new` (git/ağaç/günlük/Charter ön-doldurma) + `handoff accept/list/show` + sahiplik transferi, `thread add/update/close` |
 | M4 | `manager start/stop/run`, `watch` (terminal panosu) |
 | M5 | opsiyonel `dashboard` (tek dosya HTML) |
 | v2 | fan-out / yeteneğe göre ekip dağıtımı, karar onay akışı |
