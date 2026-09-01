@@ -64,6 +64,29 @@ pip install -e .
 python -m unittest discover -s tests -v
 ```
 
+### Kabuk tamamlaması (opsiyonel)
+
+`argcomplete` ile sekme-tamamlaması:
+
+```bash
+pipx inject agentmgr argcomplete          # veya: pip install 'agentmgr[completion]'
+```
+
+Sonra kabuğuna ekle (bash):
+
+```bash
+eval "$(register-python-argcomplete agentmgr)"
+```
+
+zsh için `.zshrc`'ye `autoload -U compinit && compinit` sonrası aynı satır.
+
+## Sürüm çıkarma
+
+Değişiklik geçmişi [CHANGELOG.md](CHANGELOG.md), sürüm adımları
+[RELEASING.md](RELEASING.md). `vX.Y.Z` etiketi push edilince `release`
+iş akışı wheel + sdist üretir ve GitHub Release oluşturur; PyPI yayını
+`PUBLISH_TO_PYPI` deposu değişkeni ile isteğe bağlıdır.
+
 ## Kullanım
 
 ```bash

@@ -1,7 +1,5 @@
-"""Command-line entry point: ``agentmgr <command>``.
-
-M1 surface: ``init``, ``log``, ``status``, ``verify``.
-"""
+"""Command-line entry point: ``agentmgr <command>``."""
+# PYTHON_ARGCOMPLETE_OK
 
 from __future__ import annotations
 
@@ -1090,6 +1088,12 @@ def main(argv: list[str] | None = None) -> int:
     except (AttributeError, ValueError):
         pass
     parser = build_parser()
+    try:  # optional: `pipx inject agentmgr argcomplete` or `pip install agentmgr[completion]`
+        import argcomplete
+
+        argcomplete.autocomplete(parser)
+    except ImportError:
+        pass
     args = parser.parse_args(argv)
     return args.func(args)
 
