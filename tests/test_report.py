@@ -68,6 +68,33 @@ class FindingsTests(unittest.TestCase):
         state = reconcile(seq(("manager-active", "mgr-01", None), base_ts=old))
         self.assertTrue(any("stale manager" in f for f in findings(state, 90, manager_stale_minutes=15)))
 
+    def test_flags_unassigned_thread_in_managed_mode(self) -> None:
+        state = reconcile(seq(
+            ("manager-active", "mgr", None),
+            ("thread-open", "mgr", {"id": "T1", "title": "Parser"}),
+        ))
+        self.assertTrue(any("unassigned thread T1" in f for f in findings(state, 90)))
+
+    def test_no_unassigned_finding_in_solo_mode(self) -> None:
+        state = reconcile(seq(
+            ("claim-solo", "claude-01", None),
+            ("thread-open", "claude-01", {"id": "T1", "title": "Parser"}),
+        ))
+        self.assertFalse(any("unassigned thread" in f for f in findings(state, 90)))
+
+    def test_flags_pending_decision(self) -> None:
+        state = reconcile(seq(
+            ("decision-proposed", "claude-01", {"id": "D1", "title": "use JSONL"}),
+        ))
+        pending = [f for f in findings(state, 90) if "pending decision D1" in f]
+        self.assertEqual(len(pending), 1)
+        # ratified -> no finding
+        state2 = reconcile(seq(
+            ("decision-proposed", "claude-01", {"id": "D1", "title": "use JSONL"}),
+            ("decision-ratified", "gpt-01", {"id": "D1"}),
+        ))
+        self.assertFalse(any("pending decision" in f for f in findings(state2, 90)))
+
     def test_flags_charter_drift(self) -> None:
         state = reconcile(seq(
             ("charter-ack", "claude-01", {"version": 1, "sha256": "aaaa1111"}),

@@ -23,6 +23,9 @@ class AgentState:
     charter_ack: int | None = None
     charter_sha: str | None = None
     solo: bool = False
+    provider: str | None = None
+    strengths: list[str] = field(default_factory=list)
+    joined_explicitly: bool = False  # emitted an agent-join, not just any event
 
 
 @dataclass
@@ -33,6 +36,19 @@ class ThreadState:
     owner: str | None = None
     next_step: str = ""
     updated: str = ""
+    tags: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DecisionState:
+    id: str
+    title: str
+    proposer: str
+    proposed_ts: str
+    status: str = "proposed"  # proposed | ratified
+    ratifier: str | None = None
+    ratified_ts: str | None = None
+    body: str = ""
 
 
 @dataclass
@@ -42,12 +58,16 @@ class ProjectState:
     manager_since: str | None = None
     agents: dict[str, AgentState] = field(default_factory=dict)
     threads: dict[str, ThreadState] = field(default_factory=dict)
+    decisions: dict[str, DecisionState] = field(default_factory=dict)
     pending_handoffs: list[dict[str, Any]] = field(default_factory=list)
     event_count: int = 0
     last_event_ts: str | None = None
 
     def open_threads(self) -> list[ThreadState]:
         return [t for t in self.threads.values() if t.status != "done"]
+
+    def open_decisions(self) -> list[DecisionState]:
+        return [d for d in self.decisions.values() if d.status == "proposed"]
 
     def stale_agents(self, stale_minutes: int, now: datetime | None = None) -> set[str]:
         now = now or datetime.now(timezone.utc)
@@ -86,7 +106,13 @@ def reconcile(events: list[Event]) -> ProjectState:
         ag = _touch(st, ev)
         data = ev.data
 
-        if ev.event == "charter-ack":
+        if ev.event == "agent-join":
+            ag.joined_explicitly = True
+            if data.get("provider"):
+                ag.provider = data["provider"]
+            if data.get("strengths"):
+                ag.strengths = [str(s).strip().lower() for s in data["strengths"]]
+        elif ev.event == "charter-ack":
             ag.charter_ack = data.get("version")
             ag.charter_sha = data.get("sha256")
         elif ev.event == "claim-solo":
@@ -107,6 +133,7 @@ def reconcile(events: list[Event]) -> ProjectState:
                 owner=data.get("owner"),
                 next_step=data.get("next_step", ""),
                 updated=ev.ts,
+                tags=[str(t).strip().lower() for t in (data.get("tags") or [])],
             )
         elif ev.event in ("thread-update", "thread-claim"):
             thread = st.threads.get(str(data.get("id", "")))
@@ -115,6 +142,8 @@ def reconcile(events: list[Event]) -> ProjectState:
                     thread.status = data["status"]
                 if "next_step" in data:
                     thread.next_step = data["next_step"]
+                if "tags" in data:
+                    thread.tags = [str(t).strip().lower() for t in (data.get("tags") or [])]
                 if ev.event == "thread-claim" or "owner" in data:
                     thread.owner = data.get("owner", ev.actor)
                 thread.updated = ev.ts
@@ -140,6 +169,21 @@ def reconcile(events: list[Event]) -> ProjectState:
             taker = st.agents.get(data.get("to") or ev.actor)
             if taker is not None:
                 taker.solo = True
+        elif ev.event == "decision-proposed":
+            did = data.get("id") or ev.id
+            st.decisions[did] = DecisionState(
+                id=did,
+                title=data.get("title", did),
+                proposer=ev.actor,
+                proposed_ts=ev.ts,
+                body=data.get("body", ""),
+            )
+        elif ev.event == "decision-ratified":
+            dec = st.decisions.get(str(data.get("id", "")))
+            if dec is not None:
+                dec.status = "ratified"
+                dec.ratifier = ev.actor
+                dec.ratified_ts = ev.ts
 
     st.mode = _derive_mode(st)
     return st

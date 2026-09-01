@@ -77,6 +77,23 @@ agentmgr handoff accept <id> --as gpt-desktop-01
 #   -> handoff-accepted olayı + sahiplik SOLO(claude) -> SOLO(gpt)
 ```
 
+### Fan-out (v2 — iş bölüştürme)
+
+```bash
+agentmgr thread add T1 --title "Parser" --actor mgr --tags "parser,mimari"
+agentmgr thread add T2 --title "Testler" --actor mgr --tags "test yazimi"
+
+agentmgr assign T1 --to claude-desktop-01          # açıkça ata
+agentmgr assign --auto [--dry-run]                 # etiket ↔ yetenek eşleştirmesi + yük dengesi
+
+agentmgr decision propose --as claude-desktop-01 --title "olay günlüğü JSONL"
+agentmgr decision ratify <D-id> --as gpt-desktop-01
+agentmgr decision list
+
+agentmgr integrate [--strict]                      # fan-out'u birleştirmeye hazır mı?
+#   tüm thread'ler done + son check geçti + bekleyen karar yok  ->  READY
+```
+
 ### Manager ve izleme
 
 ```bash
@@ -105,7 +122,7 @@ agentmgr dashboard --port 7777              # tarayıcıda salt-okunur pano (127
 | **M4** ✅ | `manager start/stop/run` (reconcile döngüsü + heartbeat), `watch` (salt-okunur terminal panosu) |
 | **M4.5** ✅ | bayat manager tespiti + otomatik devralma, `check` (doğrulama komutu → `check-run`), handoff placeholder kapısı (`--force`), charter kayması uyarısı, ayrı bayatlık eşikleri |
 | **M5** ✅ | `dashboard` — yerel `http.server` + tek dosya HTML, `/api/state` yoklaması, salt-okunur |
-| v2 | fan-out / yeteneğe göre ekip dağıtımı, karar onay akışı |
+| **v2** ✅ | `assign` (açık + `--auto` etiket/yetenek eşleştirme), thread `--tags`, `decision propose/ratify/list`, `integrate` hazırlık raporu; unassigned-thread ve pending-decision bulguları |
 
 ## Test
 

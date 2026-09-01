@@ -57,6 +57,8 @@ def build_state(layout: Layout) -> dict:
                 "charter_ack": a.charter_ack,
                 "charter_drift": bool(charter_sha and a.charter_sha and a.charter_sha != charter_sha),
                 "stale": a.actor in stale,
+                "provider": a.provider,
+                "strengths": a.strengths,
                 "last_seen": a.last_seen,
             }
             for a in sorted(state.agents.values(), key=lambda x: x.actor)
@@ -68,9 +70,20 @@ def build_state(layout: Layout) -> dict:
                 "status": t.status,
                 "owner": t.owner,
                 "next_step": t.next_step,
+                "tags": t.tags,
                 "updated": t.updated,
             }
             for t in sorted(state.threads.values(), key=lambda x: (x.status, x.id))
+        ],
+        "decisions": [
+            {
+                "id": d.id,
+                "title": d.title,
+                "status": d.status,
+                "proposer": d.proposer,
+                "ratifier": d.ratifier,
+            }
+            for d in sorted(state.decisions.values(), key=lambda x: x.id)
         ],
         "pending_handoffs": state.pending_handoffs,
         "findings": findings(state, solo_t, thread_t, mgr_t, charter_sha),
@@ -207,8 +220,9 @@ _PAGE = r"""<!doctype html>
   <section><h2>Son kontrol</h2><div id="check" class="empty">-</div></section>
   <section style="grid-column:1/-1"><h2>Agent'lar</h2><table id="agents"><tbody></tbody></table></section>
   <section style="grid-column:1/-1"><h2>Thread'ler</h2><table id="threads"><tbody></tbody></table></section>
+  <section><h2>Kararlar</h2><table id="decisions"><tbody></tbody></table></section>
   <section><h2>Bekleyen devirler</h2><table id="handoffs"><tbody></tbody></table></section>
-  <section><h2>Son olaylar</h2><div class="feed" id="feed"></div></section>
+  <section style="grid-column:1/-1"><h2>Son olaylar</h2><div class="feed" id="feed"></div></section>
 </main>
 <footer>agentmgr dashboard - salt-okunur - <span id="poll"></span>s'de bir yenilenir</footer>
 <script>
@@ -242,21 +256,30 @@ function render(d) {
     : "hic kontrol calistirilmadi";
 
   $("agents").querySelector("tbody").innerHTML = d.agents.length ? d.agents.map(a => `<tr>
-    <td>${esc(a.actor)}</td>
+    <td>${esc(a.actor)}${a.provider ? ` <span class="t">(${esc(a.provider)})</span>` : ""}</td>
     <td>${a.solo ? "solo" : ""}</td>
     <td>${a.charter_ack ? "charter v" + a.charter_ack : '<span class="flag">ack yok</span>'}
         ${a.charter_drift ? '<span class="flag">DRIFT</span>' : ""}</td>
+    <td>${(a.strengths || []).map(s => `<span class="pill">${esc(s)}</span>`).join(" ")}</td>
     <td>${a.stale ? '<span class="stale">STALE</span>' : ""}</td>
     <td class="mono t">${esc(a.last_seen)}</td></tr>`).join("")
-    : `<tr><td colspan="5" class="empty">henuz agent yok</td></tr>`;
+    : `<tr><td colspan="6" class="empty">henuz agent yok</td></tr>`;
 
   $("threads").querySelector("tbody").innerHTML = d.threads.length ? d.threads.map(t => `<tr>
     <td class="mono">${esc(t.id)}</td>
     <td><span class="pill ${esc(t.status)}">${esc(t.status)}</span></td>
     <td>${esc(t.title)}</td>
-    <td>${esc(t.owner || "-")}</td>
+    <td>${t.owner ? esc(t.owner) : (t.status !== "done" ? '<span class="flag">unassigned</span>' : "-")}</td>
+    <td>${(t.tags || []).map(x => `<span class="pill">${esc(x)}</span>`).join(" ")}</td>
     <td>${esc(t.next_step || "-")}</td></tr>`).join("")
-    : `<tr><td colspan="5" class="empty">thread yok</td></tr>`;
+    : `<tr><td colspan="6" class="empty">thread yok</td></tr>`;
+
+  $("decisions").querySelector("tbody").innerHTML = d.decisions && d.decisions.length
+    ? d.decisions.map(x => `<tr><td class="mono">${esc(x.id)}</td>
+        <td>${x.status === "ratified" ? '<span class="ok">ratified</span>' : '<span class="flag">PROPOSED</span>'}</td>
+        <td>${esc(x.title)}</td>
+        <td class="t">${esc(x.status === "ratified" ? x.ratifier : x.proposer)}</td></tr>`).join("")
+    : `<tr><td class="empty">karar yok</td></tr>`;
 
   $("handoffs").querySelector("tbody").innerHTML = d.pending_handoffs.length
     ? d.pending_handoffs.map(h => `<tr><td class="mono">${esc(h.id)}</td>

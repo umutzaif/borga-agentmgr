@@ -56,6 +56,16 @@ def findings(
             out.append(
                 f"stale thread {thread.id} ({thread.status}) - no update since {thread.updated}"
             )
+        if not thread.owner and state.mode in ("TEAM", "MANAGED"):
+            out.append(f"unassigned thread {thread.id} ({thread.title}) - run 'agentmgr assign'")
+        if thread.owner and thread.owner not in state.agents:
+            out.append(f"thread {thread.id} owned by {thread.owner}, which has no events on record")
+
+    for dec in sorted(state.open_decisions(), key=lambda d: d.id):
+        out.append(
+            f"pending decision {dec.id}: {dec.title} (proposed by {dec.proposer}) - "
+            f"ratify or reject before relying on it"
+        )
 
     if state.mode == "CONTESTED":
         out.append("mode CONTESTED: multiple solo claims and no active manager")
