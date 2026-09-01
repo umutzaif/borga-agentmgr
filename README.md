@@ -87,6 +87,7 @@ agentmgr manager run --as manager-01 --interval 30
 agentmgr manager stop --as manager-01      # manager-idle damgası
 
 agentmgr watch --interval 5                 # salt-okunur canlı pano (hiçbir şey yazmaz)
+agentmgr dashboard --port 7777              # tarayıcıda salt-okunur pano (127.0.0.1)
 ```
 
 `agentmgr log` olay tipleri: `agent-join`, `claim-solo`, `charter-ack`,
@@ -103,7 +104,7 @@ agentmgr watch --interval 5                 # salt-okunur canlı pano (hiçbir �
 | **M3** ✅ | `handoff new` (git/ağaç/günlük/Charter ön-doldurma) + `handoff accept/list/show` + sahiplik transferi, `thread add/update/close` |
 | **M4** ✅ | `manager start/stop/run` (reconcile döngüsü + heartbeat), `watch` (salt-okunur terminal panosu) |
 | **M4.5** ✅ | bayat manager tespiti + otomatik devralma, `check` (doğrulama komutu → `check-run`), handoff placeholder kapısı (`--force`), charter kayması uyarısı, ayrı bayatlık eşikleri |
-| M5 | opsiyonel `dashboard` (tek dosya HTML) |
+| **M5** ✅ | `dashboard` — yerel `http.server` + tek dosya HTML, `/api/state` yoklaması, salt-okunur |
 | v2 | fan-out / yeteneğe göre ekip dağıtımı, karar onay akışı |
 
 ## Test

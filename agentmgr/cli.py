@@ -45,12 +45,6 @@ def _thresholds(cfg: dict) -> tuple[int, int, int]:
     )
 
 
-def _manager_is_stale(state: ProjectState, minutes: int, now: datetime | None = None) -> bool:
-    if not state.manager:
-        return False
-    mgr = state.agents.get(state.manager)
-    now = now or datetime.now(timezone.utc)
-    return bool(mgr and parse_iso(mgr.last_seen) < now - timedelta(minutes=minutes))
 
 
 def _load(start: Path | None = None) -> Layout:
@@ -134,7 +128,7 @@ def _render_status(state: ProjectState, cfg: dict, layout: Layout) -> None:
     _, charter_sha = charter_fingerprint(layout)
 
     manager_line = state.manager or "-"
-    if state.manager and _manager_is_stale(state, mgr_minutes):
+    if state.manager and state.manager_is_stale(mgr_minutes):
         manager_line = f"{state.manager}  (STALE - last {state.agents[state.manager].last_seen})"
 
     bar = "-" * 60
@@ -352,7 +346,7 @@ def cmd_claim_solo(args: argparse.Namespace) -> int:
 
     if state.manager:
         _, _, mgr_stale = _thresholds(load_config(layout))
-        if _manager_is_stale(state, mgr_stale):
+        if state.manager_is_stale(mgr_stale):
             seen = state.agents[state.manager].last_seen
             _eprint(
                 f"warning: manager {state.manager} looks stale (last {seen}); "
@@ -637,7 +631,7 @@ def cmd_manager_start(args: argparse.Namespace) -> int:
         return 0
     if state.manager:
         _, _, mgr_stale = _thresholds(load_config(layout))
-        if _manager_is_stale(state, mgr_stale):
+        if state.manager_is_stale(mgr_stale):
             seen = state.agents[state.manager].last_seen
             print(f"previous manager {state.manager} looks stale (last {seen}); taking over as {actor}")
         else:
@@ -729,6 +723,24 @@ def cmd_watch(args: argparse.Namespace) -> int:
             time.sleep(interval)
     except KeyboardInterrupt:
         print()
+    return 0
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    layout = _load()
+    from agentmgr.dashboard import serve
+
+    try:
+        serve(
+            layout,
+            host=args.host,
+            port=args.port,
+            interval=max(1, args.interval),
+            open_browser=not args.no_open,
+        )
+    except OSError as exc:
+        _eprint(f"error: could not start dashboard on {args.host}:{args.port}: {exc}")
+        return 1
     return 0
 
 
@@ -858,6 +870,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch.add_argument("--once", action="store_true", help="render once and exit")
     p_watch.add_argument("--no-clear", action="store_true", help="do not clear the screen each refresh")
     p_watch.set_defaults(func=cmd_watch)
+
+    p_dash = sub.add_parser("dashboard", help="serve a local read-only web dashboard")
+    p_dash.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
+    p_dash.add_argument("--port", type=int, default=7777)
+    p_dash.add_argument("--interval", type=int, default=2, help="browser poll seconds")
+    p_dash.add_argument("--no-open", action="store_true", help="do not open a browser")
+    p_dash.set_defaults(func=cmd_dashboard)
 
     return parser
 

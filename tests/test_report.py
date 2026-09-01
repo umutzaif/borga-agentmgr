@@ -8,7 +8,8 @@ from agentmgr.report import findings
 from agentmgr.state import reconcile
 
 
-def seq(*specs: tuple[str, str, dict | None], base_ts: str = "2026-08-31T12:00:00.000000Z"):
+def seq(*specs: tuple[str, str, dict | None], base_ts: str | None = None):
+    base_ts = base_ts or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     events = []
     for i, (event, actor, data) in enumerate(specs):
         events.append(Event(id=f"ULID{i:04d}", ts=base_ts, actor=actor, event=event, data=data or {}))

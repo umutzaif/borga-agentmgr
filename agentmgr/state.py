@@ -58,6 +58,13 @@ class ProjectState:
             if a.solo and parse_iso(a.last_seen) < cutoff
         }
 
+    def manager_is_stale(self, minutes: int, now: datetime | None = None) -> bool:
+        if not self.manager:
+            return False
+        mgr = self.agents.get(self.manager)
+        now = now or datetime.now(timezone.utc)
+        return bool(mgr and parse_iso(mgr.last_seen) < now - timedelta(minutes=minutes))
+
 
 def _touch(state: ProjectState, ev: Event) -> AgentState:
     ag = state.agents.get(ev.actor)
@@ -73,6 +80,9 @@ def reconcile(events: list[Event]) -> ProjectState:
     for ev in events:
         st.event_count += 1
         st.last_event_ts = ev.ts
+        if ev.event == "check-run":
+            # a check is a fact about the project, not agent lifecycle activity
+            continue
         ag = _touch(st, ev)
         data = ev.data
 
