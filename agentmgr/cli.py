@@ -10,7 +10,7 @@ import json
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from agentmgr import __version__
@@ -18,10 +18,10 @@ from agentmgr.charter import charter_fingerprint
 from agentmgr.events import (
     KNOWN_EVENTS,
     append_event,
-    parse_iso,
     read_events,
     sanitise_actor,
 )
+from agentmgr.fanout import plan_auto_assign
 from agentmgr.handoff import create_handoff, find_handoff, unfilled_sections
 from agentmgr.ledger import rebuild, verify
 from agentmgr.paths import Layout, ProjectNotInitialised
@@ -169,10 +169,18 @@ def _render_status(state: ProjectState, cfg: dict, layout: Layout) -> None:
     summary = ", ".join(f"{v} {k}" for k, v in sorted(counts.items())) or "none"
     print(f"threads ({summary})")
     for t in sorted(state.threads.values(), key=lambda x: (x.status, x.id)):
-        owner = f"  [{t.owner}]" if t.owner else ""
+        owner = f"  [{t.owner}]" if t.owner else ("  [unassigned]" if t.status != "done" else "")
         step = f"  -> {t.next_step}" if t.next_step else ""
-        print(f"  {t.status:<8} {t.id:<14} {t.title}{step}{owner}")
+        tags = f"  #{','.join(t.tags)}" if t.tags else ""
+        print(f"  {t.status:<8} {t.id:<14} {t.title}{step}{owner}{tags}")
     print()
+
+    if state.decisions:
+        print("decisions")
+        for d in sorted(state.decisions.values(), key=lambda x: x.id):
+            mark = "ratified" if d.status == "ratified" else "PROPOSED"
+            print(f"  {d.id:<18} {mark:<9} {d.title}")
+        print()
 
     print("pending handoffs")
     if not state.pending_handoffs:
@@ -199,11 +207,12 @@ def _write_threads_md(state: ProjectState, layout: Layout) -> None:
     if not state.threads:
         lines.append("_Henuz thread yok._")
     else:
-        lines += ["| id | durum | sahip | baslik | siradaki adim |",
-                  "| -- | ----- | ----- | ------ | ------------- |"]
+        lines += ["| id | durum | sahip | etiketler | baslik | siradaki adim |",
+                  "| -- | ----- | ----- | --------- | ------ | ------------- |"]
         for t in sorted(state.threads.values(), key=lambda x: (x.status, x.id)):
+            tags = ",".join(t.tags) or "-"
             lines.append(
-                f"| {t.id} | {t.status} | {t.owner or '-'} | {t.title} | {t.next_step or '-'} |"
+                f"| {t.id} | {t.status} | {t.owner or '-'} | {tags} | {t.title} | {t.next_step or '-'} |"
             )
     layout.threads.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -242,6 +251,8 @@ def _state_to_json(state: ProjectState) -> dict:
                 "solo": a.solo,
                 "charter_ack": a.charter_ack,
                 "charter_sha": a.charter_sha,
+                "provider": a.provider,
+                "strengths": a.strengths,
                 "last_seen": a.last_seen,
             }
             for a in state.agents.values()
@@ -252,8 +263,13 @@ def _state_to_json(state: ProjectState) -> dict:
                 "status": t.status,
                 "owner": t.owner,
                 "next_step": t.next_step,
+                "tags": t.tags,
             }
             for t in state.threads.values()
+        },
+        "decisions": {
+            d.id: {"title": d.title, "status": d.status, "proposer": d.proposer, "ratifier": d.ratifier}
+            for d in state.decisions.values()
         },
         "pending_handoffs": state.pending_handoffs,
     }
@@ -550,6 +566,10 @@ def _refresh_threads(layout: Layout) -> None:
     _write_threads_md(reconcile(read_events(layout)), layout)
 
 
+def _parse_tags(raw: str | None) -> list[str]:
+    return [t.strip().lower() for t in (raw or "").split(",") if t.strip()]
+
+
 def cmd_thread_add(args: argparse.Namespace) -> int:
     layout = _load()
     data: dict = {"id": args.id, "title": args.title}
@@ -557,6 +577,8 @@ def cmd_thread_add(args: argparse.Namespace) -> int:
         data["owner"] = sanitise_actor(args.owner)
     if args.next_step:
         data["next_step"] = args.next_step
+    if args.tags:
+        data["tags"] = _parse_tags(args.tags)
     try:
         append_event(layout, "thread-open", args.actor, data)
     except ValueError as exc:
@@ -577,8 +599,10 @@ def cmd_thread_update(args: argparse.Namespace) -> int:
         data["next_step"] = args.next_step
     if args.owner:
         data["owner"] = sanitise_actor(args.owner)
+    if args.tags is not None:
+        data["tags"] = _parse_tags(args.tags)
     if len(data) == 1:
-        _eprint("error: nothing to update - pass --status, --next, or --owner")
+        _eprint("error: nothing to update - pass --status, --next, --owner, or --tags")
         return 1
     try:
         append_event(layout, "thread-update", args.actor, data)
@@ -602,6 +626,153 @@ def cmd_thread_close(args: argparse.Namespace) -> int:
     _refresh_threads(layout)
     print(f"thread {args.id} closed")
     return 0
+
+
+# --------------------------------------------------------------------- v2 fanout
+def _actor_or_manager(args: argparse.Namespace, state: ProjectState) -> str | None:
+    if args.as_:
+        return sanitise_actor(args.as_)
+    return state.manager
+
+
+def cmd_assign(args: argparse.Namespace) -> int:
+    layout = _load()
+    state = reconcile(read_events(layout))
+    actor = _actor_or_manager(args, state)
+    if not actor:
+        _eprint("error: no active manager - pass --as <id> to attribute the assignment")
+        return 1
+
+    if args.auto:
+        plan = plan_auto_assign(state)
+        if not plan:
+            print("nothing to assign (no unowned open threads, or no agents have joined)")
+            return 0
+        for tid, agent, reason in plan:
+            print(f"  {tid} -> {agent}  ({reason})")
+        if args.dry_run:
+            print("dry run - no events written")
+            return 0
+        for tid, agent, _ in plan:
+            append_event(layout, "thread-claim", actor, {"id": tid, "owner": agent})
+        rebuild(layout)
+        _refresh_threads(layout)
+        print(f"assigned {len(plan)} thread(s)")
+        return 0
+
+    if not args.thread or not args.to:
+        _eprint("error: give a thread id and --to <agent>, or use --auto")
+        return 1
+    if args.thread not in state.threads:
+        _eprint(f"error: no thread {args.thread!r}")
+        return 1
+    owner = sanitise_actor(args.to)
+    append_event(layout, "thread-claim", actor, {"id": args.thread, "owner": owner})
+    rebuild(layout)
+    _refresh_threads(layout)
+    print(f"thread {args.thread} -> {owner}")
+    return 0
+
+
+def _decision_id(now: datetime | None = None) -> str:
+    # timestamp for readability + 4 random base32 chars so two proposals in the
+    # same second do not collide
+    from agentmgr.ulid import new_ulid
+
+    return "D" + (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%S") + new_ulid()[-4:]
+
+
+def cmd_decision_propose(args: argparse.Namespace) -> int:
+    layout = _load()
+    did = args.id or _decision_id()
+    data = {"id": did, "title": args.title}
+    if args.body:
+        data["body"] = args.body
+    try:
+        append_event(layout, "decision-proposed", args.as_, data)
+    except ValueError as exc:
+        _eprint(f"error: {exc}")
+        return 1
+    rebuild(layout)
+    print(f"decision {did} proposed - ratify with: agentmgr decision ratify {did} --as <id>")
+    return 0
+
+
+def cmd_decision_ratify(args: argparse.Namespace) -> int:
+    layout = _load()
+    state = reconcile(read_events(layout))
+    dec = state.decisions.get(args.id)
+    if dec is None:
+        matches = [d for d in state.decisions if d.startswith(args.id)]
+        if len(matches) == 1:
+            dec = state.decisions[matches[0]]
+        elif len(matches) > 1:
+            _eprint("error: ambiguous decision id; matches: " + ", ".join(matches))
+            return 1
+    if dec is None:
+        _eprint(f"error: no decision matching {args.id!r}")
+        return 1
+    if dec.status == "ratified":
+        print(f"decision {dec.id} was already ratified by {dec.ratifier}")
+        return 0
+    append_event(layout, "decision-ratified", args.as_, {"id": dec.id})
+    rebuild(layout)
+    print(f"decision {dec.id} ratified - record it in CHARTER.md section 9 (ADR)")
+    return 0
+
+
+def cmd_decision_list(args: argparse.Namespace) -> int:
+    layout = _load()
+    state = reconcile(read_events(layout))
+    if not state.decisions:
+        print("no decisions on record")
+        return 0
+    for dec in sorted(state.decisions.values(), key=lambda d: d.id):
+        who = f"ratified by {dec.ratifier}" if dec.status == "ratified" else f"proposed by {dec.proposer}"
+        print(f"  {dec.id}  {dec.status:<9} {dec.title}  ({who})")
+    return 0
+
+
+def cmd_integrate(args: argparse.Namespace) -> int:
+    layout = _load()
+    events = read_events(layout)
+    state = reconcile(events)
+    blockers: list[str] = []
+
+    still_open = state.open_threads()
+    if still_open:
+        blockers.append(
+            f"{len(still_open)} thread(s) still open: "
+            + ", ".join(sorted(t.id for t in still_open))
+        )
+
+    last_close_ts = max(
+        (e.ts for e in events if e.event == "thread-close"), default=None
+    )
+    last_check = None
+    for e in events:
+        if e.event == "check-run":
+            last_check = e
+    if last_check is None:
+        blockers.append("no check has been run - 'agentmgr check' to verify the merged result")
+    elif not last_check.data.get("ok"):
+        blockers.append(f"last check FAILED (exit {last_check.data.get('exit_code')})")
+    elif last_close_ts and last_check.ts < last_close_ts:
+        blockers.append("last passing check predates the most recent thread-close - re-run 'agentmgr check'")
+
+    for dec in sorted(state.open_decisions(), key=lambda d: d.id):
+        blockers.append(f"decision {dec.id} still pending: {dec.title}")
+
+    if state.manager_is_stale(int(load_config(layout).get("manager_stale_minutes", 15))):
+        blockers.append(f"manager {state.manager} looks stale")
+
+    if not blockers:
+        print("READY to integrate: all threads done, last check passed, no pending decisions")
+        return 0
+    print(f"NOT ready to integrate - {len(blockers)} blocker(s):")
+    for b in blockers:
+        print(f"  - {b}")
+    return 1 if args.strict else 0
 
 
 def _remember_actor(layout: Layout, actor: str) -> None:
@@ -833,14 +1004,16 @@ def build_parser() -> argparse.ArgumentParser:
     ta.add_argument("--actor", required=True)
     ta.add_argument("--owner")
     ta.add_argument("--next", dest="next_step", help="next concrete step")
+    ta.add_argument("--tags", help="comma-separated capability tags for auto-assign")
     ta.set_defaults(func=cmd_thread_add)
 
-    tu = th.add_parser("update", help="update a thread's status / next step / owner")
+    tu = th.add_parser("update", help="update a thread's status / next step / owner / tags")
     tu.add_argument("id")
     tu.add_argument("--actor", required=True)
     tu.add_argument("--status", choices=["open", "blocked", "done"])
     tu.add_argument("--owner")
     tu.add_argument("--next", dest="next_step")
+    tu.add_argument("--tags", help="comma-separated; replaces the thread's tags")
     tu.set_defaults(func=cmd_thread_update)
 
     tc = th.add_parser("close", help="close a thread")
@@ -877,6 +1050,36 @@ def build_parser() -> argparse.ArgumentParser:
     p_dash.add_argument("--interval", type=int, default=2, help="browser poll seconds")
     p_dash.add_argument("--no-open", action="store_true", help="do not open a browser")
     p_dash.set_defaults(func=cmd_dashboard)
+
+    p_assign = sub.add_parser("assign", help="assign threads to agents (fan-out)")
+    p_assign.add_argument("thread", nargs="?", help="thread id (omit with --auto)")
+    p_assign.add_argument("--to", help="agent id to own the thread")
+    p_assign.add_argument("--auto", action="store_true", help="match all unowned open threads by tag/strength")
+    p_assign.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
+    p_assign.add_argument("--as", dest="as_", help="actor to attribute the assignment to (default: active manager)")
+    p_assign.set_defaults(func=cmd_assign)
+
+    p_dec = sub.add_parser("decision", help="propose / ratify project decisions")
+    dc = p_dec.add_subparsers(dest="decision_cmd", required=True)
+
+    d_prop = dc.add_parser("propose", help="record a proposed decision")
+    d_prop.add_argument("--as", dest="as_", required=True, help="proposing actor id")
+    d_prop.add_argument("--title", required=True)
+    d_prop.add_argument("--body")
+    d_prop.add_argument("--id", help="decision id (default: D<timestamp>)")
+    d_prop.set_defaults(func=cmd_decision_propose)
+
+    d_rat = dc.add_parser("ratify", help="mark a proposed decision as ratified")
+    d_rat.add_argument("id", help="decision id or unique prefix")
+    d_rat.add_argument("--as", dest="as_", required=True, help="ratifying actor id")
+    d_rat.set_defaults(func=cmd_decision_ratify)
+
+    d_list = dc.add_parser("list", help="list decisions and their status")
+    d_list.set_defaults(func=cmd_decision_list)
+
+    p_int = sub.add_parser("integrate", help="readiness report for merging a fan-out back together")
+    p_int.add_argument("--strict", action="store_true", help="exit 1 if not ready")
+    p_int.set_defaults(func=cmd_integrate)
 
     return parser
 

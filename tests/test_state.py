@@ -83,6 +83,30 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(st.threads["T2"].status, "done")
         self.assertEqual([t.id for t in st.open_threads()], ["T1"])
 
+    def test_agent_join_records_provider_and_strengths(self) -> None:
+        st = reconcile(seq(_ev("agent-join", "claude-01", {"provider": "Anthropic", "strengths": ["Parser", "Tests"]})))
+        ag = st.agents["claude-01"]
+        self.assertTrue(ag.joined_explicitly)
+        self.assertEqual(ag.provider, "Anthropic")
+        self.assertEqual(ag.strengths, ["parser", "tests"])  # lower-cased
+
+    def test_thread_tags_recorded_and_replaced(self) -> None:
+        st = reconcile(seq(
+            _ev("thread-open", "a", {"id": "T1", "title": "x", "tags": ["Parser", " lex "]}),
+            _ev("thread-update", "a", {"id": "T1", "tags": ["docs"]}),
+        ))
+        self.assertEqual(st.threads["T1"].tags, ["docs"])
+
+    def test_decision_lifecycle(self) -> None:
+        st = reconcile(seq(
+            _ev("decision-proposed", "claude-01", {"id": "D1", "title": "use JSONL"}),
+            _ev("decision-proposed", "claude-01", {"id": "D2", "title": "no deps"}),
+            _ev("decision-ratified", "gpt-01", {"id": "D1"}),
+        ))
+        self.assertEqual(st.decisions["D1"].status, "ratified")
+        self.assertEqual(st.decisions["D1"].ratifier, "gpt-01")
+        self.assertEqual([d.id for d in st.open_decisions()], ["D2"])
+
     def test_stale_agent_detection(self) -> None:
         old = (datetime.now(timezone.utc) - timedelta(hours=4)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         st = reconcile(seq(_ev("claim-solo", "claude-01", ts=old)))
