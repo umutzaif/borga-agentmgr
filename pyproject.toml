@@ -26,9 +26,13 @@ classifiers = [
     "Topic :: Utilities",
 ]
 
+[project.optional-dependencies]
+completion = ["argcomplete>=3"]
+
 [project.urls]
 Repository = "https://github.com/umutzaif/borga-agentmgr"
 Issues = "https://github.com/umutzaif/borga-agentmgr/issues"
+Changelog = "https://github.com/umutzaif/borga-agentmgr/blob/main/CHANGELOG.md"
 
 [project.scripts]
 agentmgr = "agentmgr.cli:main"
