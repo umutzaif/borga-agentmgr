@@ -4,11 +4,31 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentmgr"
-version = "0.1.0"
+version = "0.2.0"
 description = "Coordination layer for handing off and splitting a project across AI agents"
 readme = "README.md"
 requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Umut Zaif" }]
+keywords = ["agents", "llm", "handoff", "coordination", "multi-agent", "cli"]
 dependencies = []
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Version Control",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Repository = "https://github.com/umutzaif/borga-agentmgr"
+Issues = "https://github.com/umutzaif/borga-agentmgr/issues"
 
 [project.scripts]
 agentmgr = "agentmgr.cli:main"

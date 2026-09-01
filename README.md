@@ -36,11 +36,33 @@ kurulabilir.
 
 ## Kurulum
 
+Python 3.9+ gerekir, başka bağımlılık yok. Kalıcı bir CLI aracı olarak
+[pipx](https://pipx.pypa.io) ile kurmak en temizi — kendi izole ortamına kurar,
+`agentmgr` komutunu PATH'e ekler:
+
 ```bash
-pip install -e .
+pipx install git+https://github.com/umutzaif/borga-agentmgr.git
 ```
 
-Python 3.9+ gerekir, başka bağımlılık yok.
+Yerel bir klondan:
+
+```bash
+pipx install .
+```
+
+Yükseltme / kaldırma:
+
+```bash
+pipx upgrade agentmgr
+pipx uninstall agentmgr
+```
+
+Geliştirme için düzenlenebilir kurulum:
+
+```bash
+pip install -e .
+python -m unittest discover -s tests -v
+```
 
 ## Kullanım
 
