@@ -29,13 +29,12 @@ def findings(
     out: list[str] = []
 
     # a stale `manager run` leaves everyone else stuck in MANAGED mode
-    if state.manager:
-        mgr = state.agents.get(state.manager)
-        if mgr and parse_iso(mgr.last_seen) < now - timedelta(minutes=manager_stale_minutes):
-            out.append(
-                f"stale manager: {state.manager} - no event since {mgr.last_seen}; "
-                f"MANAGED mode may be stuck (run 'agentmgr manager start --as <id>' to take over)"
-            )
+    if state.manager_is_stale(manager_stale_minutes, now):
+        seen = state.agents[state.manager].last_seen
+        out.append(
+            f"stale manager: {state.manager} - no event since {seen}; "
+            f"MANAGED mode may be stuck (run 'agentmgr manager start --as <id>' to take over)"
+        )
 
     for actor in sorted(state.stale_agents(solo_stale_minutes, now)):
         seen = state.agents[actor].last_seen

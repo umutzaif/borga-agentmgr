@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from agentmgr import cli
 from agentmgr.cli import main
 from agentmgr.events import Event, read_events
 from agentmgr.paths import Layout
@@ -97,8 +96,8 @@ class M45CliTests(unittest.TestCase):
     def test_manager_is_stale_helper(self) -> None:
         old = (datetime.now(timezone.utc) - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         state = reconcile([Event(id="U0", ts=old, actor="mgr-01", event="manager-active", data={})])
-        self.assertTrue(cli._manager_is_stale(state, 15))
-        self.assertFalse(cli._manager_is_stale(state, 90))
+        self.assertTrue(state.manager_is_stale(15))
+        self.assertFalse(state.manager_is_stale(90))
 
     def test_claim_solo_still_noop_under_fresh_manager(self) -> None:
         self.cli("manager", "start", "--as", "mgr-01")
