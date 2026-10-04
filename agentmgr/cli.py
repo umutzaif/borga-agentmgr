@@ -22,7 +22,7 @@ from agentmgr.events import (
 from agentmgr.fanout import plan_auto_assign
 from agentmgr.handoff import create_handoff, find_handoff, unfilled_sections
 from agentmgr.ledger import rebuild, verify
-from agentmgr.paths import Layout, ProjectNotInitialised
+from agentmgr.paths import Layout, ProjectNotInitialised, distant_root_warning
 from agentmgr.report import findings
 from agentmgr.scaffold import init_project
 from agentmgr.state import (
@@ -48,10 +48,18 @@ def _thresholds(cfg: dict) -> tuple[int, int, int]:
 def _load(start: Path | None = None) -> Layout:
     """Discover the project or raise SystemExit(2) with a friendly message."""
     try:
-        return Layout.discover(start)
+        layout = Layout.discover(start)
     except ProjectNotInitialised as exc:
         _eprint(f"error: {exc}")
         raise SystemExit(2)
+    _warn_if_distant(layout, start)
+    return layout
+
+
+def _warn_if_distant(layout: Layout, start: Path | None = None) -> None:
+    note = distant_root_warning(start or Path.cwd(), layout.root)
+    if note:
+        _eprint(note)
 
 
 def _eprint(msg: str) -> None:
@@ -80,6 +88,7 @@ def cmd_log(args: argparse.Namespace) -> int:
     except ProjectNotInitialised as exc:
         _eprint(f"error: {exc}")
         return 2
+    _warn_if_distant(layout)
 
     if args.data:
         try:
@@ -221,6 +230,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     except ProjectNotInitialised as exc:
         _eprint(f"error: {exc}")
         return 2
+    _warn_if_distant(layout)
     try:
         events = read_events(layout)
     except ValueError as exc:
@@ -280,6 +290,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     except ProjectNotInitialised as exc:
         _eprint(f"error: {exc}")
         return 2
+    _warn_if_distant(layout)
     ok, msg = verify(layout)
     print(("OK    " if ok else "FAIL  ") + msg)
     return 0 if ok else 1

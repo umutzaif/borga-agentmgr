@@ -106,6 +106,10 @@ agentmgr check --command "pytest" --as claude-desktop-01 --phase pre
 agentmgr log <event> --actor <id> --data '{...}'   # ham olay ekleme
 ```
 
+Komutlar `.agentmgr/` klasörünü bulunduğun dizinden yukarı doğru arayarak bulur. Bulunan proje
+ev dizinindeyse ya da üç seviyeden fazla yukarıdaysa stderr'e uyarı yazılır (yanlışlıkla açılmış
+bir projeye olay yazmamak için); `AGENTMGR_NO_ROOT_WARNING=1` ile susturulur.
+
 ### Devir (handoff)
 
 ```bash

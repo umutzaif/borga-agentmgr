@@ -4,6 +4,15 @@ Notable changes to agentmgr. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- A warning on stderr when the `.agentmgr/` project that gets picked up is in
+  the home directory or more than three levels above the current directory.
+  `agentmgr` walks up from the cwd, so a stray project (for example one made
+  by an accidental `init` in `~`) was adopted silently and received events from
+  commands run in the wrong window. Silence it with `AGENTMGR_NO_ROOT_WARNING=1`.
+
 ## [0.2.1] - 2026-10-04
 
 Field fixes from the first end-to-end pilot (a small e-commerce app built by
