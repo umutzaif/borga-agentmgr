@@ -6,4 +6,4 @@ event to ``.agentmgr/events/``; ``ledger.jsonl`` is a derived, hash-chained
 mirror of that directory and can be rebuilt at any time.
 """
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
