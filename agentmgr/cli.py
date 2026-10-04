@@ -511,18 +511,35 @@ def cmd_handoff_accept(args: argparse.Namespace) -> int:
         _eprint("  the outgoing agent should fill these in, or pass --force to accept anyway")
         return 1
 
-    taker = reconcile(events).agents.get(target)
+    before = reconcile(events)
+    taker = before.agents.get(target)
     if taker is None or taker.charter_ack is None:
         _eprint(
             f"warning: {target} has no charter-ack on record - it should run "
             f"'agentmgr charter-ack {target}' before working"
         )
 
+    outgoing = created[0].data.get("from") if created else None
+    if not outgoing and "-to-" in path.stem:
+        outgoing = path.stem.split("-", 1)[1].split("-to-", 1)[0]
+    moved = sorted(
+        t.id for t in before.open_threads() if outgoing and outgoing != target and t.owner == outgoing
+    )
+
     append_event(layout, "handoff-accepted", target, {"id": hid, "to": target})
+    for tid in moved:
+        append_event(layout, "thread-claim", target, {"id": tid, "owner": target, "handoff": hid})
     rebuild(layout)
+    if moved:
+        _refresh_threads(layout)
     version, _ = charter_fingerprint(layout)
     ver_hint = f"   (CHARTER.md is at v{version})" if version else ""
-    print(f"handoff {hid} accepted - ownership is now SOLO({target})")
+    if before.manager:
+        print(f"handoff {hid} accepted - {target} works under manager {before.manager}")
+    else:
+        print(f"handoff {hid} accepted - ownership is now SOLO({target})")
+    if moved:
+        print(f"threads moved from {outgoing} to {target}: {', '.join(moved)}")
     print("next:")
     print(f"  1. read {path.relative_to(layout.root).as_posix()} sections 1-7")
     print(f"  2. agentmgr charter-ack {target}{ver_hint}")
@@ -787,6 +804,42 @@ def _remember_actor(layout: Layout, actor: str) -> None:
 
 
 # ------------------------------------------------------------------- M4 manager
+def _claim_manager(layout: Layout, actor: str, force: bool) -> int | None:
+    """Record ``manager-active`` for ``actor``; return an exit code if the claim is refused.
+
+    Taking over a manager that is still fresh needs ``--force``. Taking over a
+    stale one is allowed, but is recorded in the event so it shows up in
+    ``reconcile`` instead of happening silently.
+    """
+    state = reconcile(read_events(layout))
+    data: dict = {}
+    previous = state.manager
+    if previous and previous != actor:
+        _, _, mgr_stale = _thresholds(load_config(layout))
+        stale = state.manager_is_stale(mgr_stale)
+        seen = state.agents[previous].last_seen
+        if not stale and not force:
+            _eprint(
+                f"error: {previous} is the active manager (last seen {seen}); "
+                "pass --force to take over"
+            )
+            return 1
+        data["takeover_from"] = previous
+        if not stale:
+            data["forced"] = True
+        _eprint(
+            f"WARNING: taking over from {'stale ' if stale else ''}manager {previous} "
+            f"(last seen {seen}) - recorded in the ledger; make sure it is really gone"
+        )
+    append_event(layout, "manager-active", actor, data)
+    return None
+
+
+def heartbeat_gap(interval: int, stale_minutes: int) -> float:
+    """Seconds between manager heartbeats: well inside the stale window, never rarer than a cycle."""
+    return max(float(interval), stale_minutes * 60 / 3)
+
+
 def cmd_manager_start(args: argparse.Namespace) -> int:
     layout = _load()
     try:
@@ -798,14 +851,9 @@ def cmd_manager_start(args: argparse.Namespace) -> int:
     if state.manager == actor:
         print(f"{actor} is already the active manager")
         return 0
-    if state.manager:
-        _, _, mgr_stale = _thresholds(load_config(layout))
-        if state.manager_is_stale(mgr_stale):
-            seen = state.agents[state.manager].last_seen
-            print(f"previous manager {state.manager} looks stale (last {seen}); taking over as {actor}")
-        else:
-            _eprint(f"warning: {state.manager} is already the active manager; taking over as {actor}")
-    append_event(layout, "manager-active", actor, {})
+    refused = _claim_manager(layout, actor, args.force)
+    if refused is not None:
+        return refused
     rebuild(layout)
     print(f"manager-active recorded for {actor}")
     return 0
@@ -836,12 +884,20 @@ def cmd_manager_run(args: argparse.Namespace) -> int:
         return 1
     interval = max(1, args.interval)
 
-    append_event(layout, "manager-active", actor, {})
+    refused = _claim_manager(layout, actor, args.force)
+    if refused is not None:
+        return refused
     rebuild(layout)
     print(f"manager {actor} active - reconciling every {interval}s (Ctrl+C to stop)")
+    mgr_stale_minutes = _thresholds(load_config(layout))[2]
+    if interval >= mgr_stale_minutes * 60:
+        _eprint(
+            f"warning: --interval {interval}s is not shorter than manager_stale_minutes "
+            f"({mgr_stale_minutes}m); the manager will look stale between cycles"
+        )
 
     previous: list[str] | None = None
-    tick = 0
+    last_beat: float | None = None
     try:
         while True:
             events = read_events(layout)
@@ -850,8 +906,10 @@ def cmd_manager_run(args: argparse.Namespace) -> int:
             _, charter_sha = charter_fingerprint(layout)
             issues = findings(state, solo_t, thread_t, mgr_t, charter_sha)
             _write_threads_md(state, layout)
-            if not args.once and tick % 5 == 0:
+            gap = heartbeat_gap(interval, mgr_t)
+            if not args.once and (last_beat is None or time.monotonic() - last_beat >= gap - 1):
                 append_event(layout, "heartbeat", actor, {"role": "manager"})
+                last_beat = time.monotonic()
             rebuild(layout)
 
             stamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -865,7 +923,6 @@ def cmd_manager_run(args: argparse.Namespace) -> int:
 
             if args.once:
                 break
-            tick += 1
             time.sleep(interval)
     except KeyboardInterrupt:
         print()
@@ -1024,6 +1081,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     m_start = mg.add_parser("start", help="stamp manager-active")
     m_start.add_argument("--as", dest="as_", required=True, help="manager actor id")
+    m_start.add_argument("--force", action="store_true", help="take over even if the current manager is not stale")
     m_start.set_defaults(func=cmd_manager_start)
 
     m_stop = mg.add_parser("stop", help="stamp manager-idle")
@@ -1034,6 +1092,7 @@ def build_parser() -> argparse.ArgumentParser:
     m_run.add_argument("--as", dest="as_", required=True, help="manager actor id")
     m_run.add_argument("--interval", type=int, default=30, help="seconds between cycles")
     m_run.add_argument("--once", action="store_true", help="run one cycle and exit")
+    m_run.add_argument("--force", action="store_true", help="take over even if the current manager is not stale")
     m_run.set_defaults(func=cmd_manager_run)
 
     p_watch = sub.add_parser("watch", help="live read-only status panel")

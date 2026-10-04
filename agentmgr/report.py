@@ -36,6 +36,12 @@ def findings(
             f"MANAGED mode may be stuck (run 'agentmgr manager start --as <id>' to take over)"
         )
 
+    if state.manager and state.manager_takeover_from:
+        out.append(
+            f"manager takeover: {state.manager} took over from {state.manager_takeover_from} "
+            f"- confirm with the user that the previous manager is really gone"
+        )
+
     for actor in sorted(state.stale_agents(solo_stale_minutes, now)):
         seen = state.agents[actor].last_seen
         out.append(f"orphaned solo claim: {actor} silent > {solo_stale_minutes}m (last {seen})")

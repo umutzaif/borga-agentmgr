@@ -4,6 +4,40 @@ Notable changes to agentmgr. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-10-04
+
+Field fixes from the first end-to-end pilot (a small e-commerce app built by
+Claude, Antigravity and Cursor through `agentmgr`).
+
+### Fixed
+- `handoff accept` now moves the outgoing agent's open threads to the
+  receiver (it only logged `handoff-accepted` before, so the receiver had to
+  re-own them by hand). Done threads and other agents' threads are untouched.
+- `handoff accept` no longer marks the receiver `solo` while a manager is
+  active; `status` stays honest in MANAGED/TEAM projects.
+- The handoff completeness gate also catches `_<...>_` placeholders that wrap
+  across lines (sections 2 and 5 of the template slipped through).
+- Handoff packets only include git history when the project root *is* the git
+  toplevel — a project nested in an unrelated repo no longer inherits that
+  repo's commits. The fallback file tree honours `.gitignore` and skips
+  `__pycache__`/`*.pyc`.
+- Ratified decisions are rendered with their title in the packet instead of a
+  raw dict.
+- `log`/`thread` events reject thread statuses other than
+  `open` / `blocked` / `done`.
+- `manager run` heartbeats on a clock (about a third of
+  `manager_stale_minutes`, never rarer than one cycle) instead of every fifth
+  cycle, and warns when `--interval` is not shorter than the stale window.
+  Previously `--interval 300` let the manager go stale between heartbeats.
+
+### Changed
+- `manager start` / `manager run` refuse to replace a fresh manager unless
+  `--force`; replacing a stale one is still allowed but is recorded
+  (`takeover_from` on the event) and `reconcile` reports it.
+- `assign --auto` still skips the manager by default, but the manager (if it
+  joined) is now eligible for a thread it matches by tag, instead of such a
+  thread falling through to a poorly-matched agent.
+
 ## [0.2.0] - 2026-09-01
 
 First feature-complete release: both halves of the brief — hand a project off
@@ -41,4 +75,5 @@ between agents, and split its threads across several agents.
 ### Added
 - Initial skeleton: `init`, event log, `log`, `status`.
 
+[0.2.1]: https://github.com/umutzaif/borga-agentmgr/releases/tag/v0.2.1
 [0.2.0]: https://github.com/umutzaif/borga-agentmgr/releases/tag/v0.2.0

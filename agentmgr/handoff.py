@@ -6,6 +6,8 @@ outgoing agent fills the judgement parts by hand.
 
 from __future__ import annotations
 
+import fnmatch
+import os
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -108,15 +110,67 @@ def _git(root: Path, *args: str) -> str:
         return ""
 
 
+def _in_own_repo(root: Path) -> bool:
+    """True only when ``root`` itself is the git toplevel.
+
+    A project nested inside some other repository must not leak that repo's
+    history or file list into its handoff packet.
+    """
+    top = _git(root, "rev-parse", "--show-toplevel")
+    if not top:
+        return False
+    try:
+        return os.path.samefile(top, root)
+    except OSError:
+        return False
+
+
+_ALWAYS_IGNORED = ("__pycache__/", "*.pyc", ".git/", "node_modules/", ".venv/", "venv/")
+
+
+def _ignore_patterns(root: Path) -> list[str]:
+    patterns = list(_ALWAYS_IGNORED)
+    gitignore = root / ".gitignore"
+    if gitignore.is_file():
+        for line in gitignore.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if line and not line.startswith(("#", "!")):
+                patterns.append(line)
+    return patterns
+
+
+def _is_ignored(rel: str, patterns: list[str]) -> bool:
+    """Small gitignore subset: ``*`` globs, trailing ``/`` = directory, ``/`` inside = anchored."""
+    parts = rel.split("/")
+    for raw in patterns:
+        dir_only = raw.endswith("/")
+        pat = raw.strip("/")
+        if not pat:
+            continue
+        if raw.startswith("/") or "/" in pat:
+            if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(rel, pat + "/*"):
+                return True
+        else:
+            names = parts[:-1] if dir_only else parts
+            if any(fnmatch.fnmatch(name, pat) for name in names):
+                return True
+    return False
+
+
 def _file_tree(root: Path, limit: int = 200) -> str:
-    tracked = _git(root, "ls-files")
+    tracked = _git(root, "ls-files") if _in_own_repo(root) else ""
     if tracked:
         files = [f for f in tracked.splitlines() if not f.startswith(".agentmgr/")]
     else:
+        patterns = _ignore_patterns(root)
         files = [
-            str(p.relative_to(root)).replace("\\", "/")
-            for p in sorted(root.rglob("*"))
-            if p.is_file() and ".git" not in p.parts and ".agentmgr" not in p.parts
+            rel
+            for rel in (
+                str(p.relative_to(root)).replace("\\", "/")
+                for p in sorted(root.rglob("*"))
+                if p.is_file()
+            )
+            if not rel.startswith(".agentmgr/") and not _is_ignored(rel, patterns)
         ]
     if len(files) > limit:
         files = files[:limit] + [f"... (+{len(files) - limit} more)"]
@@ -124,12 +178,19 @@ def _file_tree(root: Path, limit: int = 200) -> str:
 
 
 def _decisions_block(events: list[Event]) -> str:
-    lines = [
-        f"- **{ev.ts}** ({ev.event}) {ev.actor}: "
-        f"{ev.data.get('title') or ev.data.get('summary') or ev.data}"
+    titles = {
+        (ev.data.get("id") or ev.id): ev.data.get("title")
         for ev in events
-        if ev.event in ("decision-proposed", "decision-ratified")
-    ]
+        if ev.event == "decision-proposed"
+    }
+    lines = []
+    for ev in events:
+        if ev.event == "decision-proposed":
+            did = ev.data.get("id") or ev.id
+            lines.append(f"- **{ev.ts}** onerildi `{did}` ({ev.actor}): {titles.get(did) or did}")
+        elif ev.event == "decision-ratified":
+            did = str(ev.data.get("id", ""))
+            lines.append(f"- **{ev.ts}** onaylandi `{did}` ({ev.actor}): {titles.get(did) or did}")
     if not lines:
         return "_Kayitli karar olayi yok - CHARTER.md ADR bolumune bak._"
     return "\n".join(lines)
@@ -171,7 +232,9 @@ def build_document(
         if (root / "tests").is_dir()
         else "_<projeyi dogrulayan komut>_"
     )
-    gitlog = _git(root, "log", "--oneline", "-15") or "_(git gecmisi yok)_"
+    gitlog = (_git(root, "log", "--oneline", "-15") if _in_own_repo(root) else "") or (
+        "_(git gecmisi yok)_"
+    )
     return _TEMPLATE.format(
         frm=frm,
         to=to,
@@ -209,7 +272,8 @@ def create_handoff(
     return hid, path
 
 
-_PLACEHOLDER_RE = re.compile(r"_<[^>\n]*>_")
+# placeholders may wrap across lines; angle brackets inside are never part of one
+_PLACEHOLDER_RE = re.compile(r"_<[^<>]*>_")
 _SECTION_RE = re.compile(r"^## (\d+)\. (.+)$", re.MULTILINE)
 
 
