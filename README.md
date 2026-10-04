@@ -119,7 +119,9 @@ agentmgr handoff new --from claude-desktop-01 --to gpt-desktop-01
 agentmgr handoff list
 agentmgr handoff show <id>
 agentmgr handoff accept <id> --as gpt-desktop-01
-#   -> handoff-accepted olayı + sahiplik SOLO(claude) -> SOLO(gpt)
+#   -> handoff-accepted olayı + giden agent'ın açık thread'leri alıcıya geçer
+#      (manager yoksa sahiplik SOLO(claude) -> SOLO(gpt); manager varsa alıcı onun altında çalışır)
+#   Paket git bilgisini yalnızca proje kendi git deposuysa ekler; dosya ağacı .gitignore'a uyar.
 ```
 
 ### Fan-out (v2 — iş bölüştürme)
@@ -130,6 +132,7 @@ agentmgr thread add T2 --title "Testler" --actor mgr --tags "test yazimi"
 
 agentmgr assign T1 --to claude-desktop-01          # açıkça ata
 agentmgr assign --auto [--dry-run]                 # etiket ↔ yetenek eşleştirmesi + yük dengesi
+#   manager atlanır; yalnızca etiketi birebir eşleşen thread'de (join etmişse) o da aday olur
 
 agentmgr decision propose --as claude-desktop-01 --title "olay günlüğü JSONL"
 agentmgr decision ratify <D-id> --as gpt-desktop-01
@@ -143,9 +146,12 @@ agentmgr integrate [--strict]                      # fan-out'u birleştirmeye ha
 
 ```bash
 agentmgr manager start --as manager-01     # manager-active damgası -> MANAGED mod
+#   başka bir manager taze ise reddeder (--force ile devralınır); bayat ise devralır
+#   ama olaya takeover_from yazılır ve reconcile "manager takeover" bulgusu verir
 agentmgr manager run --as manager-01 --interval 30
 #   arka plan döngüsü: her 30s reconcile + bulgu raporu + THREADS.md yenile
-#   + periyodik manager heartbeat; Ctrl+C'de manager-idle yazıp çıkar
+#   + manager heartbeat (bayatlık eşiğinin ~1/3'ünde bir, en az bir döngü aralığı);
+#   --interval bayatlık eşiğinden uzunsa uyarır; Ctrl+C'de manager-idle yazıp çıkar
 agentmgr manager stop --as manager-01      # manager-idle damgası
 
 agentmgr watch --interval 5                 # salt-okunur canlı pano (hiçbir şey yazmaz)
@@ -168,6 +174,7 @@ agentmgr dashboard --port 7777              # tarayıcıda salt-okunur pano (127
 | **M4.5** ✅ | bayat manager tespiti + otomatik devralma, `check` (doğrulama komutu → `check-run`), handoff placeholder kapısı (`--force`), charter kayması uyarısı, ayrı bayatlık eşikleri |
 | **M5** ✅ | `dashboard` — yerel `http.server` + tek dosya HTML, `/api/state` yoklaması, salt-okunur |
 | **v2** ✅ | `assign` (açık + `--auto` etiket/yetenek eşleştirme), thread `--tags`, `decision propose/ratify/list`, `integrate` hazırlık raporu; unassigned-thread ve pending-decision bulguları |
+| **v2.1** ✅ | e-ticaret pilotundan saha düzeltmeleri: `handoff accept` thread sahipliğini devreder, manager varken `solo` işaretlemez; çok satırlı placeholder kapısı; git/ağaç bağlamı (kendi deposu + .gitignore); karar başlıkları; thread durum doğrulaması; manager devralma koruması + zaman tabanlı heartbeat; `assign --auto` manager'ı etiket eşleşmesinde kullanır |
 
 ## Test
 

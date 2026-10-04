@@ -76,7 +76,7 @@ class HandoffTests(unittest.TestCase):
 
     def test_filled_packet_has_no_unfilled_sections(self) -> None:
         _, path = create_handoff(self.layout, "a", "b", [], reconcile([]))
-        text = re.sub(r"_<[^>\n]*>_", "done", path.read_text(encoding="utf-8"))
+        text = re.sub(r"_<[^<>]*>_", "done", path.read_text(encoding="utf-8"))
         self.assertEqual(unfilled_sections(text), [])
 
 

@@ -41,7 +41,7 @@ class M3CliTests(unittest.TestCase):
         if fill:  # replace the _<...>_ placeholders so 'accept' does not gate
             import re
 
-            text = re.sub(r"_<[^>\n]*>_", "done", docs[0].read_text(encoding="utf-8"))
+            text = re.sub(r"_<[^<>]*>_", "done", docs[0].read_text(encoding="utf-8"))
             docs[0].write_text(text, encoding="utf-8")
         return docs[0].stem.split("-", 1)[0]
 

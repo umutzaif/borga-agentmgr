@@ -56,6 +56,7 @@ class ProjectState:
     mode: str = "IDLE"
     manager: str | None = None
     manager_since: str | None = None
+    manager_takeover_from: str | None = None
     agents: dict[str, AgentState] = field(default_factory=dict)
     threads: dict[str, ThreadState] = field(default_factory=dict)
     decisions: dict[str, DecisionState] = field(default_factory=dict)
@@ -118,12 +119,15 @@ def reconcile(events: list[Event]) -> ProjectState:
         elif ev.event == "claim-solo":
             ag.solo = True
         elif ev.event == "manager-active":
+            if st.manager != ev.actor:
+                st.manager_takeover_from = data.get("takeover_from")
             st.manager = ev.actor
             st.manager_since = ev.ts
         elif ev.event == "manager-idle":
             if st.manager == ev.actor:
                 st.manager = None
                 st.manager_since = None
+                st.manager_takeover_from = None
         elif ev.event == "thread-open":
             tid = data.get("id") or ev.id
             st.threads[tid] = ThreadState(
@@ -164,11 +168,13 @@ def reconcile(events: list[Event]) -> ProjectState:
         elif ev.event == "handoff-accepted":
             hid = data.get("id")
             st.pending_handoffs = [h for h in st.pending_handoffs if h.get("id") != hid]
-            for other in st.agents.values():
-                other.solo = False
-            taker = st.agents.get(data.get("to") or ev.actor)
-            if taker is not None:
-                taker.solo = True
+            # under an active manager the taker is a worker, not the solo owner
+            if st.manager is None:
+                for other in st.agents.values():
+                    other.solo = False
+                taker = st.agents.get(data.get("to") or ev.actor)
+                if taker is not None:
+                    taker.solo = True
         elif ev.event == "decision-proposed":
             did = data.get("id") or ev.id
             st.decisions[did] = DecisionState(

@@ -41,6 +41,10 @@ KNOWN_EVENTS: frozenset[str] = frozenset(
 )
 
 
+THREAD_STATUSES: frozenset[str] = frozenset({"open", "blocked", "done"})
+_STATUS_EVENTS = frozenset({"thread-open", "thread-update", "thread-claim"})
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).strftime(_TS_FMT)
 
@@ -91,6 +95,12 @@ def append_event(
     data: dict[str, Any] | None = None,
 ) -> Event:
     actor = sanitise_actor(actor)
+    if event in _STATUS_EVENTS and data and "status" in data:
+        if data["status"] not in THREAD_STATUSES:
+            raise ValueError(
+                f"invalid thread status {data['status']!r} - use one of: "
+                + ", ".join(sorted(THREAD_STATUSES))
+            )
     layout.events.mkdir(parents=True, exist_ok=True)
     ev = Event(id=new_ulid(), ts=now_iso(), actor=actor, event=event, data=data or {})
     path = layout.events / f"{ev.id}-{actor}.json"
