@@ -7,6 +7,13 @@ Notable changes to agentmgr. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- `decision ratify` now drafts the ADR itself: it appends `### ADR-NNN: <title>`
+  to `CHARTER.md` (context from the proposal's `--body`, a `Sonuç` placeholder
+  to fill in), bumps the Charter version and the update date, and tells agents
+  to `charter-ack` again — which `reconcile` then enforces through its existing
+  charter-drift finding. A still-empty template `ADR-001` is replaced instead
+  of left dangling; a Charter that already mentions the decision id is left
+  alone; `--no-adr` keeps the old behaviour; CRLF line endings are preserved.
 - A warning on stderr when the `.agentmgr/` project that gets picked up is in
   the home directory or more than three levels above the current directory.
   `agentmgr` walks up from the cwd, so a stray project (for example one made
