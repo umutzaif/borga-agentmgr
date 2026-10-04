@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agentmgr import __version__
-from agentmgr.charter import charter_fingerprint
+from agentmgr.charter import charter_fingerprint, record_decision
 from agentmgr.events import (
     KNOWN_EVENTS,
     append_event,
@@ -741,9 +741,32 @@ def cmd_decision_ratify(args: argparse.Namespace) -> int:
     if dec.status == "ratified":
         print(f"decision {dec.id} was already ratified by {dec.ratifier}")
         return 0
-    append_event(layout, "decision-ratified", args.as_, {"id": dec.id})
+    ratifier = sanitise_actor(args.as_)
+    append_event(layout, "decision-ratified", ratifier, {"id": dec.id})
     rebuild(layout)
-    print(f"decision {dec.id} ratified - record it in CHARTER.md section 9 (ADR)")
+    if args.no_adr:
+        print(f"decision {dec.id} ratified - record it in CHARTER.md section 9 (ADR)")
+        return 0
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        result = record_decision(layout, dec.id, dec.title, dec.body, ratifier, today)
+    except OSError as exc:
+        _eprint(f"warning: could not update CHARTER.md ({exc}); record the ADR by hand")
+        print(f"decision {dec.id} ratified")
+        return 0
+    if result is None:
+        print(f"decision {dec.id} ratified - no CHARTER.md found, nothing to record")
+    elif result.skipped:
+        print(f"decision {dec.id} ratified - {result.skipped}; left unchanged")
+    else:
+        bumped = (
+            f" (now v{result.version_after})" if result.version_after is not None else ""
+        )
+        print(f"decision {dec.id} ratified - {result.adr} drafted in CHARTER.md{bumped}")
+        print("next:")
+        print(f"  1. fill in the 'Sonuc' line of {result.adr} (and check its Baglam/Karar)")
+        print("  2. every agent re-reads the Charter and runs 'agentmgr charter-ack <id>'")
     return 0
 
 
@@ -1140,6 +1163,7 @@ def build_parser() -> argparse.ArgumentParser:
     d_rat = dc.add_parser("ratify", help="mark a proposed decision as ratified")
     d_rat.add_argument("id", help="decision id or unique prefix")
     d_rat.add_argument("--as", dest="as_", required=True, help="ratifying actor id")
+    d_rat.add_argument("--no-adr", action="store_true", help="do not draft an ADR in CHARTER.md")
     d_rat.set_defaults(func=cmd_decision_ratify)
 
     d_list = dc.add_parser("list", help="list decisions and their status")

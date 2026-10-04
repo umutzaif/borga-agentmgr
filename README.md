@@ -139,7 +139,7 @@ agentmgr assign --auto [--dry-run]                 # etiket ↔ yetenek eşleşt
 #   manager atlanır; yalnızca etiketi birebir eşleşen thread'de (join etmişse) o da aday olur
 
 agentmgr decision propose --as claude-desktop-01 --title "olay günlüğü JSONL"
-agentmgr decision ratify <D-id> --as gpt-desktop-01
+agentmgr decision ratify <D-id> --as gpt-desktop-01  # CHARTER.md'ye ADR taslağı yazar, sürümü artırır (--no-adr: yazma)
 agentmgr decision list
 
 agentmgr integrate [--strict]                      # fan-out'u birleştirmeye hazır mı?
