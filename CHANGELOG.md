@@ -4,7 +4,7 @@ Notable changes to agentmgr. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.2] - 2026-10-04
 
 ### Added
 - `decision ratify` now drafts the ADR itself: it appends `### ADR-NNN: <title>`
@@ -91,5 +91,6 @@ between agents, and split its threads across several agents.
 ### Added
 - Initial skeleton: `init`, event log, `log`, `status`.
 
+[0.2.2]: https://github.com/umutzaif/borga-agentmgr/releases/tag/v0.2.2
 [0.2.1]: https://github.com/umutzaif/borga-agentmgr/releases/tag/v0.2.1
 [0.2.0]: https://github.com/umutzaif/borga-agentmgr/releases/tag/v0.2.0
