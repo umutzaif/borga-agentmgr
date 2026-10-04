@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 DIRNAME = ".agentmgr"
+# a project this many levels above the cwd (or in the home directory) is probably not the one meant
+MAX_UPWARD_LEVELS = 3
+QUIET_ENV = "AGENTMGR_NO_ROOT_WARNING"
 
 
 class ProjectNotInitialised(Exception):
@@ -18,6 +22,36 @@ def find_root(start: Path | None = None) -> Path:
             return candidate
     raise ProjectNotInitialised(
         f"no {DIRNAME}/ found in {start} or any parent - run 'agentmgr init' first"
+    )
+
+
+def _home() -> Path:
+    return Path.home()
+
+
+def distant_root_warning(start: Path, root: Path) -> str | None:
+    """Explain why an adopted project root looks suspicious, or ``None`` if it looks fine.
+
+    ``find_root`` walks up from the cwd, so a stray ``.agentmgr`` in the home
+    directory or high above would otherwise be picked up silently.
+    """
+    if os.environ.get(QUIET_ENV):
+        return None
+    start, root = Path(start).resolve(), Path(root).resolve()
+    if start == root:
+        return None
+    try:
+        levels = len(start.relative_to(root).parts)
+    except ValueError:
+        return None
+    is_home = root == _home().resolve()
+    if not is_home and levels <= MAX_UPWARD_LEVELS:
+        return None
+    where = "your home directory" if is_home else f"{levels} levels above here"
+    return (
+        f"warning: using the {DIRNAME} project at {root} ({where}, cwd is {start}). "
+        f"If that is not the project you meant, cd into it or run 'agentmgr init' here; "
+        f"set {QUIET_ENV}=1 to silence this."
     )
 
 
